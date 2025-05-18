@@ -131,7 +131,7 @@ if (nrow(sampler_joined_df) > 0) {
 
   sampler_summary_agg <- sampler_joined_df %>%
     filter(!is.na(fitted_model_code)) %>%
-    group_by(T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac, fit_type, fitted_model_code) %>%
+    group_by(condition_id, T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac, fit_type, fitted_model_code) %>%
     summarize(
       n_total_fits = n(), n_reps_diverged = safe_summarize(divergences, function(x) sum(x > 0, na.rm = TRUE)),
       pct_reps_diverged = safe_summarize(divergences > 0, mean, na.rm = TRUE) * 100,
@@ -139,13 +139,21 @@ if (nrow(sampler_joined_df) > 0) {
       n_reps_maxdepth = safe_summarize(maxdepth_exceeded, function(x) sum(x > 0, na.rm = TRUE)),
       pct_reps_maxdepth = safe_summarize(maxdepth_exceeded > 0, mean, na.rm = TRUE) * 100,
       avg_eFMI = safe_summarize(eFMI, mean, na.rm = TRUE), min_eFMI = safe_summarize(eFMI, min, na.rm = TRUE),
-      n_reps_low_bfmi = safe_summarize(eFMI, function(x) sum(x < 0.3, na.rm = TRUE)), .groups = "drop"
+      n_reps_low_bfmi = safe_summarize(eFMI, function(x) sum(x < 0.3, na.rm = TRUE)),
+      avg_accept_stat = safe_summarize(avg_accept_stat, mean, na.rm = TRUE),
+      avg_stepsize = safe_summarize(avg_stepsize, mean, na.rm = TRUE),
+      .groups = "drop"
     ) %>%
     mutate(across(where(is.numeric), ~ replace(., !is.finite(.), NA)))
 
   cat("\n--- Overall Sampler Diagnostics Summary (Aggregated) ---\n")
   print(kable(sampler_summary_agg, digits = 2, row.names = FALSE) %>% kable_styling(font_size = 8))
   cat("-------------------------------------------------------\n")
+
+  # Save aggregated summary to CSV
+  summary_csv <- file.path(RESULTS_DIR, "convergence_summary.csv")
+  write.csv(sampler_summary_agg, summary_csv, row.names = FALSE)
+  cat("Saved convergence summary to:", summary_csv, "\n")
 } else {
   cat("No sampler information available.\n")
 }
@@ -173,6 +181,24 @@ if (nrow(sampler_joined_df) > 0) {
     guides(fill = "none") +
     labs(title = "E-FMI (Aggregated)", x = "Fit Type", y = "E-FMI")
   ggsave(file.path(PLOTS_DIR, "diag_agg_eFMI.png"), p_efmi_agg, width = 7, height = 5, dpi = 150)
+  plot_saved_count <- plot_saved_count + 1
+
+  p_accept_agg <- ggplot(sampler_joined_df, aes(x = fit_type, y = avg_accept_stat, fill = fitted_model_code)) +
+    geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
+    geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +
+    fill_scale_viridis +
+    guides(fill = "none") +
+    labs(title = "Avg Acceptance Stat (Aggregated)", x = "Fit Type", y = "Acceptance")
+  ggsave(file.path(PLOTS_DIR, "diag_agg_accept_stat.png"), p_accept_agg, width = 7, height = 5, dpi = 150)
+  plot_saved_count <- plot_saved_count + 1
+
+  p_stepsize_agg <- ggplot(sampler_joined_df, aes(x = fit_type, y = avg_stepsize, fill = fitted_model_code)) +
+    geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
+    geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +
+    fill_scale_viridis +
+    guides(fill = "none") +
+    labs(title = "Avg Stepsize (Aggregated)", x = "Fit Type", y = "Stepsize")
+  ggsave(file.path(PLOTS_DIR, "diag_agg_stepsize.png"), p_stepsize_agg, width = 7, height = 5, dpi = 150)
   plot_saved_count <- plot_saved_count + 1
 }
 if (nrow(results_joined_df) > 0) {
@@ -228,6 +254,28 @@ if (nrow(sampler_joined_df) > 0) {
     labs(title = "E-FMI by Condition", x = NULL, y = "E-FMI") +
     theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), strip.text = element_text(size = 7))
   ggsave(file.path(PLOTS_DIR, "diag_facet_eFMI.png"), p_efmi_facet, width = 12, height = 7, dpi = 150)
+  plot_saved_count <- plot_saved_count + 1
+
+  p_accept_facet <- ggplot(sampler_joined_df, aes(x = fit_type, y = avg_accept_stat, fill = fitted_model_code)) +
+    geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
+    geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +
+    fill_scale_viridis +
+    guides(fill = "none") +
+    facet_grid(facet_formula, labeller = label_value) +
+    labs(title = "Avg Acceptance Stat by Condition", x = NULL, y = "Acceptance") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), strip.text = element_text(size = 7))
+  ggsave(file.path(PLOTS_DIR, "diag_facet_accept_stat.png"), p_accept_facet, width = 12, height = 7, dpi = 150)
+  plot_saved_count <- plot_saved_count + 1
+
+  p_stepsize_facet <- ggplot(sampler_joined_df, aes(x = fit_type, y = avg_stepsize, fill = fitted_model_code)) +
+    geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
+    geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +
+    fill_scale_viridis +
+    guides(fill = "none") +
+    facet_grid(facet_formula, labeller = label_value) +
+    labs(title = "Avg Stepsize by Condition", x = NULL, y = "Stepsize") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8), strip.text = element_text(size = 7))
+  ggsave(file.path(PLOTS_DIR, "diag_facet_stepsize.png"), p_stepsize_facet, width = 12, height = 7, dpi = 150)
   plot_saved_count <- plot_saved_count + 1
 }
 if (nrow(results_joined_df) > 0) {
