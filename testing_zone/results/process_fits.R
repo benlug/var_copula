@@ -246,14 +246,23 @@ for (fit_file in fit_files) {
     )
     maxdepth_exceeded <- sum(sampler_params_df$treedepth__ >= max_td_setting, na.rm = TRUE)
     avg_eFMI <- mean(map_dbl(sampler_params, ~ calc_e_fmi(.x[, "energy__"])), na.rm = TRUE)
+
+    # Per-chain averages for acceptance statistic and stepsize
+    chain_accept <- map_dbl(sampler_params, ~ mean(.x[, "accept_stat__"], na.rm = TRUE))
+    chain_steps <- map_dbl(sampler_params, ~ mean(.x[, "stepsize__"], na.rm = TRUE))
+    avg_accept_stat <- mean(chain_accept, na.rm = TRUE)
+    avg_stepsize <- mean(chain_steps, na.rm = TRUE)
+
     sampler_results_list[[length(sampler_results_list) + 1]] <- tibble(
       condition_id = cond_id, rep_i = rep_i, fitted_model_code = fitted_model_code,
-      divergences = total_divergences, maxdepth_exceeded = maxdepth_exceeded, eFMI = avg_eFMI
+      divergences = total_divergences, maxdepth_exceeded = maxdepth_exceeded, eFMI = avg_eFMI,
+      avg_accept_stat = avg_accept_stat, avg_stepsize = avg_stepsize
     )
   } else {
     sampler_results_list[[length(sampler_results_list) + 1]] <- tibble(
       condition_id = cond_id, rep_i = rep_i, fitted_model_code = fitted_model_code,
-      divergences = NA_integer_, maxdepth_exceeded = NA_integer_, eFMI = NA_real_
+      divergences = NA_integer_, maxdepth_exceeded = NA_integer_, eFMI = NA_real_,
+      avg_accept_stat = NA_real_, avg_stepsize = NA_real_
     )
   }
   files_processed <- files_processed + 1
