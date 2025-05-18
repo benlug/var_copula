@@ -34,32 +34,46 @@ setwd(BASE_DIR)
 # )
 
 # --- Simulation Factors & Levels ---
+# factor_levels <- list(
+#   dgp_copula = c("clayton"),
+#   dgp_alpha1 = c(-9), # Alpha for margin 1
+#   dgp_alpha2 = c(9), # Alpha for margin 2
+#   dgp_tau = c(0.5),
+#   T_levels = c(30, 100),
+#   phi11 = c(0.5),
+#   phi22 = c(0.5),
+#   phi12 = c(0.2),
+#   phi21 = c(0.2),
+#   replications = 32 # SET TO SMALL NUMBER FOR TESTING (e.g., 2-4)
+#   # replications = 4
+# )
+
 factor_levels <- list(
-  dgp_copula = c("clayton"),
-  dgp_alpha1 = c(-9), # Alpha for margin 1
-  dgp_alpha2 = c(9), # Alpha for margin 2
-  dgp_tau = c(0.5),
+  dgp_copula = c("gaussian", "clayton"),
+  dgp_alpha1 = c(-5.0, 0.0, 5.0),
+  dgp_alpha2 = c(-5.0, 0.0, 5.0),
+  dgp_tau = c(0.2, 0.5),
   T_levels = c(30, 100),
-  phi11 = c(0.5),
-  phi22 = c(0.5),
-  phi12 = c(0.2),
-  phi21 = c(0.2),
-  replications = 32 # SET TO SMALL NUMBER FOR TESTING (e.g., 2-4)
-  # replications = 4
+  phi11 = c(0.2, 0.6),
+  phi22 = c(0.2, 0.6),
+  phi12 = c(0.0, 0.2),
+  phi21 = c(0.0, 0.2),
+  replications = 25
 )
+
 
 # --- Fixed Simulation Parameters ---
 fixed_params <- list(
   target_variance = 1.0,
   mu_intercepts = c(0.0, 0.0),
-  burnin = 50
+  burnin = 30
 )
 
 # --- Pipeline Control Flags ---
 run_simulation <- TRUE
 run_checks <- TRUE
 run_fitting <- TRUE
-run_processing <- TRUE # Assumes process_fits.R is updated for separate alphas
+run_processing <- FALSE # Assumes process_fits.R is updated for separate alphas
 # run_evaluation <- FALSE # Requires updated Quarto/R script
 # run_convergence <- FALSE # Requires updated Quarto/R script
 
@@ -219,8 +233,8 @@ if (run_fitting) {
       data_dir = DATA_DIR,
       fits_dir = FITS_DIR,
       stan_models_dir = BASE_DIR, # Assumes .stan files are in BASE_DIR
-      sim_conditions_file = conditions_file
-      # num_cores = parallel::detectCores() - 1 # Optional parallel
+      sim_conditions_file = conditions_file,
+      num_cores = parallel::detectCores() - 1 # Optional parallel
     )
     cat("--- Model Fitting Finished ---\n")
   }
@@ -232,9 +246,9 @@ if (run_fitting) {
 if (run_processing) {
   cat("\n--- Running Post-Fit Processing ---\n")
   # Assumes process_fits.R exists in BASE_DIR and is updated
-  process_script_path <- file.path(BASE_DIR, "process_fits.R")
+  process_script_path <- file.path(RESULTS_DIR, "process_fits.R")
   if (!file.exists(process_script_path)) {
-    warning("Processing script 'process_fits.R' not found in BASE_DIR.", call. = FALSE)
+    warning("Processing script 'process_fits.R' not found in RESULTS_DIR", call. = FALSE)
     stop("Processing script missing.")
   }
   warning("Executing process_fits.R - Ensure it handles separate alpha1/alpha2!", call. = FALSE)

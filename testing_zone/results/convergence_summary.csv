@@ -1,0 +1,5 @@
+"condition_id","T_fac","dgp_alpha1_fac","dgp_alpha2_fac","dgp_copula_fac","dgp_tau_fac","fit_type","fitted_model_code","n_total_fits","n_reps_diverged","pct_reps_diverged","avg_divergences","max_divergences","n_reps_maxdepth","pct_reps_maxdepth","avg_eFMI","min_eFMI","n_reps_low_bfmi","avg_accept_stat","avg_stepsize"
+1,"T=30","A1=-9","A2=9","Cop=Clayton","Tau=0.5","Correct","SC",32,32,100,257.6875,2147,0,0,0.449233522748848,0.433699143460051,0,0.787341599929575,0.0390119906448276
+1,"T=30","A1=-9","A2=9","Cop=Clayton","Tau=0.5","Standard","NG",32,0,0,0,0,0,0,0.479972891135822,0.465870774899162,0,0.921655163343489,0.27793158062291
+2,"T=100","A1=-9","A2=9","Cop=Clayton","Tau=0.5","Correct","SC",32,27,84.375,310.90625,1571,0,0,0.480093937684558,0.450688210274071,0,0.850323093868548,0.103413625222692
+2,"T=100","A1=-9","A2=9","Cop=Clayton","Tau=0.5","Standard","NG",32,0,0,0,0,0,0,0.497403308081025,0.482315961032823,0,0.925079668486355,0.297267626762948
