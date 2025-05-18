@@ -17,12 +17,12 @@ generate_residuals <- function(n, margin1_dist, margin1_params,
                                margin2_dist, margin2_params, copula_info) {
   qmargin1 <- switch(margin1_dist,
     "normal" = function(p) qnorm(p, mean = margin1_params$mean, sd = margin1_params$sd),
-    "skewnormal" = function(p) sn::qsn(p, xi = margin1_params$xi, omega = margin1_params$omega, alpha = margin1_params$alpha),
+    "skewnormal" = function(p) sn::qsn(p, xi = margin1_params$xi, omega = margin1_params$omega, alpha = margin1_params$alpha, solver = "RFB"),
     stop("Unsupported margin1 distribution: ", margin1_dist)
   )
   qmargin2 <- switch(margin2_dist,
     "normal" = function(p) qnorm(p, mean = margin2_params$mean, sd = margin2_params$sd),
-    "skewnormal" = function(p) sn::qsn(p, xi = margin2_params$xi, omega = margin2_params$omega, alpha = margin2_params$alpha),
+    "skewnormal" = function(p) sn::qsn(p, xi = margin2_params$xi, omega = margin2_params$omega, alpha = margin2_params$alpha, solver = "RFB"),
     stop("Unsupported margin2 distribution: ", margin2_dist)
   )
 
