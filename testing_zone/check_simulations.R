@@ -217,6 +217,7 @@ run_post_sim_checks_var1 <- function(data_dir, checks_dir) {
 
     tryCatch(grDevices::dev.off(), error = function(e) { }) # Silence error if already closed
     cat(sprintf("  Finished plots => %s\n", pdf_file))
+
   } # End condition loop
 
   cat(sprintf("\n--- Simulation checks finished. Output PDFs in '%s'. ---\n", checks_dir))
