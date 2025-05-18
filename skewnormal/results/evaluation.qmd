@@ -1,0 +1,569 @@
+---
+title: "Evaluation of Skew-Normal Model Simulation Results"
+subtitle: "Parameter Recovery Across Conditions: Normal vs. Skew-Normal Fits"
+date: "`r format(Sys.time(), '%B %d, %Y')`"
+execute:
+  echo: true
+  warning: false # Set TRUE for debugging
+  message: true # Show messages, e.g., from joins or filtering
+  error: true
+format:
+  html:
+    code-fold: true
+    toc: true
+    toc-depth: 4
+    number-sections: true
+    theme: cosmo
+    page-layout: full
+---
+
+```{r setup, include=FALSE}
+# Libraries
+library(rstan)
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(forcats)
+library(ggplot2)
+library(this.path)
+library(purrr)
+
+# --- Define Paths Relative to this QMD File ---
+RESULTS_DIR <- this.dir()
+if (!dir.exists(RESULTS_DIR)) stop("Results directory not found:", RESULTS_DIR)
+FITS_DIR <- file.path(RESULTS_DIR, "../fits")
+DATA_DIR <- file.path(RESULTS_DIR, "../data")
+
+# Use absolute paths for checking existence
+fits_dir_abs <- normalizePath(FITS_DIR, mustWork = FALSE)
+data_dir_abs <- normalizePath(DATA_DIR, mustWork = FALSE)
+
+if (!dir.exists(fits_dir_abs)) stop("Fits directory not found: ", fits_dir_abs)
+if (!dir.exists(data_dir_abs)) stop("Data directory not found: ", data_dir_abs)
+
+# Stan/R options
+rstan::rstan_options(auto_write = TRUE)
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+options(mc.cores = parallel::detectCores() %||% 1)
+theme_set(theme_bw(base_size = 10))
+
+# --- Load Simulation Conditions ---
+sim_conds_file <- file.path(data_dir_abs, "sim_conditions.rds")
+if (!file.exists(sim_conds_file)) stop("Cannot find sim conditions file: ", sim_conds_file)
+sim_conditions_df <- readRDS(sim_conds_file) %>%
+  dplyr::select(condition_id, N, T, target_alpha, phi11_base, phi12_base, has_random_effects, everything()) %>%
+  dplyr::distinct(condition_id, .keep_all = TRUE) %>%
+  mutate(condition_id = as.integer(condition_id))
+
+# --- Load Parameter Recovery Results ---
+param_results_file <- file.path(RESULTS_DIR, "simulation_parameter_results_with_vars.rds")
+if (!file.exists(param_results_file)) {
+  stop(
+    "Parameter results file not found: ", param_results_file,
+    "\nPlease ensure process_fits.R ran successfully."
+  )
+}
+results_df <- readRDS(param_results_file) %>%
+  mutate(condition_id = as.integer(condition_id))
+
+# --- Load Sampler Info ---
+sampler_info_file <- file.path(RESULTS_DIR, "sampler_information.rds")
+if (!file.exists(sampler_info_file)) {
+  warning("Sampler info file not found: ", sampler_info_file, ". Sampler summaries will be missing.")
+  sampler_info_df <- data.frame()
+} else {
+  sampler_info_df <- readRDS(sampler_info_file) %>%
+    mutate(condition_id = as.integer(condition_id))
+}
+
+# --- Assign to working variables ---
+results_joined_df <- results_df
+sampler_joined_df <- sampler_info_df
+
+# --- Define Factor Levels and Order ---
+# Overall parameter order (used to order parameters within each category plot)
+master_param_order <- c(
+  # Fixed Effects / Copula
+  "mu_global[1]", "mu_global[2]", "phi11_base", "phi12_base", "phi21_base", "phi22_base",
+  "phi11", "phi12", "phi21", "phi22", "rho",
+  # RE SDs
+  "sigma_mu[1]", "sigma_mu[2]", "sigma_phi[1]", "sigma_phi[2]", "sigma_phi[3]", "sigma_phi[4]",
+  # RE Variances
+  "var_sigma_mu[1]", "var_sigma_mu[2]", "var_sigma_phi[1]", "var_sigma_phi[2]", "var_sigma_phi[3]", "var_sigma_phi[4]",
+  # Residual Params
+  "sigma[1]", "sigma[2]", "xi[1]", "xi[2]", "omega[1]", "omega[2]", "alpha[1]", "alpha[2]"
+)
+# Category Order
+category_order <- c("Fixed Effects / Copula", "RE SDs", "RE Variances", "Residual Params", "Other")
+model_levels <- c("normal", "skewnormal")
+
+
+if (nrow(results_joined_df) == 0) {
+  warning("No results data found after loading. Cannot proceed with analysis.")
+  param_levels <- character(0)
+  can_analyze <- FALSE
+  condition_grid <- data.frame()
+} else {
+  can_analyze <- TRUE
+  actual_params_in_data <- unique(as.character(results_joined_df$parameter))
+  # Define param_levels based on parameters actually present, ordered by master list
+  param_levels <- intersect(master_param_order, actual_params_in_data)
+  actual_categories_in_data <- unique(as.character(results_joined_df$param_category))
+  # Update category_order to only include categories present in the data
+  category_order <- intersect(category_order, actual_categories_in_data)
+
+  # --- Mutate Factors ---
+  required_cols <- c("N", "T", "target_alpha", "has_random_effects", "phi11_base", "phi12_base", "parameter", "param_category", "model_type", "condition_id")
+  missing_cols <- setdiff(required_cols, names(results_joined_df))
+  if (length(missing_cols) > 0) {
+    stop("Missing required columns in results_joined_df: ", paste(missing_cols, collapse = ", "))
+  }
+
+  results_joined_df <- results_joined_df %>%
+    filter(!is.na(parameter)) %>%
+    mutate(
+      parameter = factor(parameter, levels = param_levels), # Use overall ordered levels
+      param_category = factor(replace_na(param_category, "Other"), levels = category_order),
+      model_type = factor(model_type, levels = model_levels),
+      condition_id = factor(condition_id),
+      N_fac = factor(N),
+      T_fac = factor(T),
+      target_alpha_cat = factor(paste0("Alpha=", target_alpha)),
+      re_cat = factor(ifelse(has_random_effects, "RE=ML", "RE=SL")),
+      AR_base_fac = factor(paste0("AR=", phi11_base)),
+      CrossLag_base_fac = factor(paste0("Cross=", phi12_base))
+    )
+
+  # --- Define Condition Grid for Looping ---
+  condition_factors <- c("N", "T", "phi11_base", "phi12_base")
+  condition_grid <- results_joined_df %>%
+    distinct(across(all_of(condition_factors))) %>%
+    arrange(N, T, phi11_base, phi12_base)
+
+  # --- Factorize Sampler Info ---
+  # (Factorization code kept same as before, just ensure N_fac etc exist)
+  if (nrow(sampler_joined_df) > 0) {
+    required_sampler_cols <- c("N", "T", "target_alpha", "has_random_effects", "phi11_base", "phi12_base", "model_type", "condition_id")
+    missing_sampler_cols <- setdiff(required_sampler_cols, names(sampler_joined_df))
+    if (length(missing_sampler_cols) > 0) {
+      warning("Missing required columns in sampler_joined_df: ", paste(missing_sampler_cols, collapse = ", "), ". Sampler info processing might fail.")
+      for (col in missing_sampler_cols) sampler_joined_df[[col]] <- NA
+      # Ensure factors exist even if columns were missing
+      sampler_joined_df <- sampler_joined_df %>% mutate(N_fac = factor(N), T_fac = factor(T), target_alpha_cat = factor(paste0("Alpha=", target_alpha)), re_cat = factor(ifelse(has_random_effects, "RE=ML", "RE=SL")), AR_base_fac = factor(paste0("AR=", phi11_base)), CrossLag_base_fac = factor(paste0("Cross=", phi12_base)))
+    }
+    sampler_joined_df <- sampler_joined_df %>%
+      mutate(
+        model_type = factor(model_type, levels = model_levels),
+        condition_id = factor(condition_id),
+        N_fac = factor(N),
+        T_fac = factor(T),
+        target_alpha_cat = factor(paste0("Alpha=", target_alpha)),
+        re_cat = factor(ifelse(has_random_effects, "RE=ML", "RE=SL")),
+        AR_base_fac = factor(paste0("AR=", phi11_base)),
+        CrossLag_base_fac = factor(paste0("Cross=", phi12_base))
+      )
+  }
+}
+```
+
+# 1. Setup and Helper Functions {#sec-helpers}
+
+```{r define-helpers}
+# --- Helper Functions ---
+
+# E-FMI calculation (unchanged)
+calc_e_fmi <- function(energy_vec) {
+  n <- length(energy_vec)
+  if (n < 3) {
+    return(NA_real_)
+  }
+  Emean <- mean(energy_vec)
+  varE <- sum((energy_vec - Emean)^2) / (n - 1)
+  lag1 <- sum((energy_vec[-1] - Emean) * (energy_vec[-n] - Emean)) / (n - 1)
+  denom <- varE + 2 * lag1
+  if (is.na(denom) || denom <= 0) {
+    return(NA_real_)
+  }
+  varE / denom
+}
+
+# Format sim conditions (unchanged)
+format_sim_conditions <- function(sim_conds) {
+  get_sn_param <- function(margin_list, param_name) {
+    purrr::map_dbl(margin_list, ~ .x$params[[param_name]] %||% NA_real_)
+  }
+  sim_conds %>%
+    mutate(
+      sigma_mu_str = purrr::map_chr(sigma_mu_vec, ~ paste(round(.x, 2), collapse = ", ")),
+      sigma_phi_str = purrr::map_chr(sigma_phi_vec, ~ paste(round(range(.x), 2), collapse = "-")),
+      margin1_dist = purrr::map_chr(margin1, ~ .x$dist %||% NA_character_),
+      margin1_xi = get_sn_param(margin1, "xi"),
+      margin1_omega = get_sn_param(margin1, "omega"),
+      margin1_alpha = get_sn_param(margin1, "alpha"),
+      copula = purrr::map_chr(copula_choice, ~ .x$copula %||% NA_character_),
+      copula_rho = purrr::map_dbl(copula_choice, ~ .x$params$rho %||% NA_real_)
+    ) %>%
+    dplyr::select(
+      condition_id, N, T, target_alpha, phi11_base, phi12_base, has_random_effects,
+      mu_global_1, sigma_mu_str, sigma_phi_str, n_reps,
+      margin1_dist, margin1_xi, margin1_omega, margin1_alpha,
+      copula, copula_rho
+    ) %>%
+    dplyr::rename(AR_base = phi11_base, CrossLag_base = phi12_base, SkewAlpha = target_alpha, RE_present = has_random_effects) %>%
+    as.data.frame()
+}
+
+# Plotting function: Now expects data filtered by category and category-specific param_levels
+# It will only facet by re_cat and target_alpha_cat
+plot_boxplot_dist_by_category <- function(data, y_var, category_name, title_suffix, y_label, hline_val = NULL, param_levels_arg) {
+  if (!y_var %in% names(data)) {
+    warning(paste("Metric", y_var, "not found in data for category:", category_name, title_suffix))
+    return(ggplot() +
+      labs(title = paste(category_name, title_suffix, "(Metric Missing)")))
+  }
+  y_sym <- sym(y_var)
+
+  # Data should already be filtered for the specific category
+  # Ensure parameter factor uses the provided levels for this category
+  data_plot <- data %>%
+    mutate(parameter = factor(parameter, levels = param_levels_arg)) %>%
+    filter(!is.na(parameter)) # Filter out any parameters not in the defined levels for this category
+
+  if (nrow(data_plot) == 0) {
+    # Suppress warning if no data is expected for a category (e.g., RE SDs in SL model)
+    # warning(paste("No valid data to plot for", y_var, "in category:", category_name, title_suffix))
+    return(ggplot() +
+      labs(title = paste(category_name, title_suffix, "(No Data)")))
+  }
+  if (length(param_levels_arg) == 0) {
+    warning(paste("No parameters defined for category:", category_name, "in", title_suffix))
+    return(ggplot() +
+      labs(title = paste(category_name, title_suffix, "(No Params Defined)")))
+  }
+
+  p <- ggplot(data_plot, aes(x = parameter, y = !!y_sym, fill = model_type)) +
+    geom_boxplot(position = position_dodge(width = 0.85), outlier.shape = 19, outlier.size = 0.5, outlier.alpha = 0.5, alpha = 0.7, width = 0.7, na.rm = TRUE) +
+    {
+      if (!is.null(hline_val)) geom_hline(yintercept = hline_val, color = "red", linetype = "dashed", linewidth = 1)
+    } +
+    scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Fit Model") +
+    # Ensure x-axis respects the specific factor levels for this category
+    scale_x_discrete(limits = param_levels_arg, drop = FALSE) + # Use limits here
+    labs(title = paste(category_name, "-", title_suffix), x = NULL, y = y_label) +
+    # Facet only by rows (RE presence) and columns (Alpha)
+    facet_grid(re_cat ~ target_alpha_cat, scales = "free_y") + # Removed param_category facet
+    theme_bw(base_size = 10) +
+    theme(
+      axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1, size = 8), # Smaller axis text if needed
+      legend.position = "bottom",
+      plot.title = element_text(hjust = 0.5, size = 11),
+      strip.background = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.spacing = unit(0.5, "lines"),
+      strip.text.y = element_text(angle = 0)
+    ) # Ensure RE label is horizontal
+  return(p)
+}
+
+# Plotting function for RMSE (bar plot) - similar logic
+plot_rmse_bar_by_category <- function(data, category_name, title_suffix, param_levels_arg) {
+  # Data should be the summary_df filtered for condition and category
+  # Ensure parameter factor uses the provided levels for this category
+  data_plot <- data %>%
+    mutate(parameter = factor(parameter, levels = param_levels_arg)) %>%
+    filter(!is.na(parameter))
+
+  if (nrow(data_plot) == 0) {
+    # warning(paste("No summary data to plot RMSE for category:", category_name, title_suffix))
+    return(ggplot() +
+      labs(title = paste(category_name, title_suffix, "- RMSE (No Data)")))
+  }
+  if (length(param_levels_arg) == 0) {
+    warning(paste("No parameters defined for RMSE in category:", category_name, "in", title_suffix))
+    return(ggplot() +
+      labs(title = paste(category_name, title_suffix, "- RMSE (No Params Defined)")))
+  }
+
+
+  p <- ggplot(data_plot, aes(x = parameter, y = rmse, fill = model_type)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7, color = "grey30", alpha = 0.8, na.rm = TRUE) +
+    scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Fit Model") +
+    # Ensure x-axis respects the specific factor levels for this category
+    scale_x_discrete(limits = param_levels_arg, drop = FALSE) +
+    labs(title = paste(category_name, "-", title_suffix), x = NULL, y = "RMSE") +
+    # Facet only by rows (RE presence) and columns (Alpha)
+    facet_grid(re_cat ~ target_alpha_cat, scales = "free_y") +
+    theme_bw(base_size = 10) +
+    theme(
+      axis.text.x = element_text(angle = 50, hjust = 1, vjust = 1, size = 8),
+      legend.position = "bottom",
+      plot.title = element_text(hjust = 0.5, size = 11),
+      strip.background = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.spacing = unit(0.5, "lines"),
+      strip.text.y = element_text(angle = 0)
+    )
+  return(p)
+}
+
+# Simple labeller (no longer needs wrapping for param_category)
+plain_labeller <- labeller(.default = label_value)
+
+```
+
+# 2. Simulation Conditions Overview {#sec-load-conditions}
+
+```{r load-conditions-exec, cache=FALSE}
+#| label: tbl-sim-conditions
+#| tbl-cap: "Overview of Simulation Conditions"
+# (This chunk remains the same)
+if (exists("sim_conditions_df") && nrow(sim_conditions_df) > 0) {
+  sim_conds_table_display <- format_sim_conditions(sim_conditions_df)
+  cat("Total number of simulation conditions combinations (unique rows):", nrow(sim_conditions_df), "\n")
+  kable(sim_conds_table_display, digits = 3, row.names = FALSE) %>%
+    kable_styling(bootstrap_options = c("striped", "condensed", "responsive"), font_size = 8) %>%
+    scroll_box(width = "100%", height = "400px")
+} else {
+  cat("Simulation conditions data frame not available or empty.")
+}
+```
+
+# 3. Summary Statistics Table {#sec-summary-stats}
+
+```{r calculate-summaries-exec}
+#| label: tbl-summary-stats
+#| tbl-cap: "Summary Statistics per Simulation Condition Combination"
+# (This chunk remains largely the same, ensure factors are correct)
+if (exists("results_joined_df") && nrow(results_joined_df) > 0 && can_analyze) {
+  summary_df <- results_joined_df %>%
+    filter(!is.na(parameter) & !is.na(model_type) & !is.na(param_category)) %>% # Add NA filter for category
+    group_by(
+      condition_id, N_fac, T_fac, target_alpha_cat, re_cat, AR_base_fac, CrossLag_base_fac, # Condition factors
+      model_type, parameter, param_category
+    ) %>% # Model and parameter factors
+    summarize(
+      n_reps_param = n(),
+      true_value = first(true_value),
+      avg_est = mean(post_mean, na.rm = TRUE),
+      sd_est = sd(post_mean, na.rm = TRUE),
+      avg_bias = mean(bias, na.rm = TRUE),
+      med_bias = median(bias, na.rm = TRUE),
+      avg_rel_bias = mean(if_else(abs(true_value) > 1e-6 & !is.na(bias), bias / abs(true_value), NA_real_), na.rm = TRUE),
+      med_rel_bias = median(if_else(abs(true_value) > 1e-6 & !is.na(bias), bias / abs(true_value), NA_real_), na.rm = TRUE),
+      rmse = sqrt(mean(bias^2, na.rm = TRUE)),
+      mae = mean(abs(bias), na.rm = TRUE),
+      coverage = mean(coverage, na.rm = TRUE),
+      avg_post_sd = mean(post_sd, na.rm = TRUE),
+      avg_ci_width = mean(ci_width, na.rm = TRUE),
+      avg_Rhat = mean(Rhat, na.rm = TRUE),
+      pct_rhat_high = mean(Rhat > 1.05, na.rm = TRUE) * 100,
+      med_n_eff = median(n_eff, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    mutate(
+      parameter = factor(parameter, levels = param_levels),
+      param_category = factor(param_category, levels = category_order)
+    ) # Use updated category_order
+
+  # --- Join Sampler Summary ---
+  # (Sampler joining logic remains the same)
+  if (exists("sampler_joined_df") && nrow(sampler_joined_df) > 0) {
+    required_sampler_group_cols <- c("condition_id", "model_type")
+    missing_sampler_group_cols <- setdiff(required_sampler_group_cols, names(sampler_joined_df))
+    if (length(missing_sampler_group_cols) > 0) {
+      warning("Missing columns required for grouping sampler info: ", paste(missing_sampler_group_cols, collapse = ", "))
+      summary_df <- summary_df %>%
+        mutate(n_reps_sampler = NA_integer_, avg_divergences = NA_real_, pct_reps_diverged = NA_real_, avg_maxdepth_exceeded = NA_real_, avg_eFMI = NA_real_)
+    } else {
+      sampler_summary <- sampler_joined_df %>%
+        filter(!is.na(condition_id) & !is.na(model_type)) %>%
+        mutate(condition_id = as.integer(condition_id)) %>%
+        group_by(condition_id, model_type) %>%
+        summarize(
+          n_reps_sampler = n(),
+          avg_divergences = mean(divergences, na.rm = TRUE),
+          pct_reps_diverged = mean(divergences > 0, na.rm = TRUE) * 100,
+          avg_maxdepth_exceeded = mean(maxdepth_exceeded, na.rm = TRUE),
+          avg_eFMI = mean(eFMI, na.rm = TRUE),
+          .groups = "drop"
+        )
+      summary_df <- summary_df %>% mutate(condition_id = as.integer(condition_id))
+      summary_df <- left_join(summary_df, sampler_summary, by = c("condition_id", "model_type"))
+    }
+  } else {
+    summary_df <- summary_df %>%
+      mutate(n_reps_sampler = NA_integer_, avg_divergences = NA_real_, pct_reps_diverged = NA_real_, avg_maxdepth_exceeded = NA_real_, avg_eFMI = NA_real_)
+  }
+
+  # Save the detailed summary
+  saveRDS(summary_df, file.path(RESULTS_DIR, "simulation_summary_details_per_condition.rds"))
+
+  # Display summary table
+  summary_display <- summary_df %>%
+    arrange(condition_id, param_category, model_type, parameter) %>%
+    select(
+      condition_id, N_fac, T_fac, target_alpha_cat, re_cat, AR_base_fac, CrossLag_base_fac, # Condition Info
+      model_type, parameter, param_category, n_reps_param, true_value, # Param Info
+      avg_bias, rmse, coverage, avg_Rhat, med_n_eff, # Key Metrics
+      pct_reps_diverged
+    ) %>%
+    mutate(across(where(is.numeric), round, 3))
+
+  kable(summary_display,
+    digits = 3, row.names = FALSE,
+    caption = "Summary Statistics per Simulation Condition Combination (Key Metrics)"
+  ) %>%
+    kable_styling(bootstrap_options = c("striped", "condensed", "responsive"), font_size = 7) %>%
+    scroll_box(width = "100%", height = "600px")
+} else {
+  cat("No parameter recovery results found or data setup failed, cannot summarize.")
+}
+
+```
+
+# 4. Visualization of Parameter Recovery Distributions {#sec-plots}
+
+Plots show distributions of metrics across replications, faceted by `Alpha` (skew direction) and `RE` (model structure ML/SL). **Separate plot sets are generated for each unique combination of N, T, AR Base, Cross-Lag Base AND for each Parameter Category.**
+
+```{r check-plot-data, include=FALSE}
+# Check if data exists for plotting loop
+can_plot_loop <- exists("results_joined_df") && nrow(results_joined_df) > 0 &&
+  can_analyze &&
+  exists("condition_grid") && nrow(condition_grid) > 0 &&
+  exists("summary_df") && nrow(summary_df) > 0 && # Need summary_df for RMSE
+  length(category_order) > 0 # Need categories to loop through
+
+if (!can_plot_loop) {
+  warning("Insufficient data, condition grid, summary data, or category definitions to generate plots.", call. = FALSE)
+} else {
+  cat(paste("Ready to generate plots for", nrow(condition_grid), "condition combinations across", length(category_order), "parameter categories.\n"))
+}
+```
+
+```{r generate-plots-loop, results='asis', fig.width=10, fig.height=6, eval=can_plot_loop}
+#| output: asis
+#| cache: false # Disable caching for this loop if it causes issues
+
+# --- Loop through condition combinations ---
+purrr::pwalk(condition_grid, function(N, T, phi11_base, phi12_base) {
+  # Create a title/header for this condition set
+  cond_title_base <- sprintf("Condition: N=%s, T=%s, AR=%.1f, Cross=%.1f", N, T, phi11_base, phi12_base)
+  cat("\n\n## ", cond_title_base, "{.unnumbered}\n") # Use markdown header level 2
+
+  # Filter the main results data for the current condition combination
+  current_results_subset <- results_joined_df %>%
+    filter(N == !!N, T == !!T, phi11_base == !!phi11_base, phi12_base == !!phi12_base)
+
+  # Filter the summary data for the current condition combination
+  current_summary_subset <- summary_df %>%
+    filter(N_fac == factor(N), T_fac == factor(T), AR_base_fac == factor(paste0("AR=", phi11_base)), CrossLag_base_fac == factor(paste0("Cross=", phi12_base)))
+
+  # --- Inner Loop: Iterate through Parameter Categories ---
+  for (cat_name in category_order) {
+    cat(paste0("\n\n### ", cat_name, "\n")) # Header for the category
+
+    # --- Filter further for the current category ---
+    category_results_subset <- current_results_subset %>%
+      filter(param_category == cat_name)
+
+    category_summary_subset <- current_summary_subset %>%
+      filter(param_category == cat_name)
+
+    # --- Determine parameters for this category, maintaining master order ---
+    category_params <- intersect(master_param_order, unique(as.character(category_results_subset$parameter)))
+
+    # Check if there are any parameters for this category in this condition
+    if (length(category_params) == 0) {
+      cat(paste0("\n*(No parameters found for category '", cat_name, "' in this condition)*\n"))
+      next # Skip to the next category
+    }
+    if (nrow(category_results_subset) == 0) {
+      cat(paste0("\n*(No results data found for category '", cat_name, "' in this condition)*\n"))
+      next # Skip to the next category
+    }
+
+
+    # --- 4.1 Bias Distribution ---
+    cat("\n\n**Bias Distribution**\n")
+    #| label: fig-bias-dist-category
+    #| fig-cap: !expr paste("Bias Distribution for", cat_name, "-", cond_title_base)
+
+    p_bias <- plot_boxplot_dist_by_category(
+      data = category_results_subset,
+      y_var = "bias",
+      category_name = cat_name,
+      title_suffix = cond_title_base,
+      y_label = "Bias",
+      hline_val = 0,
+      param_levels_arg = category_params
+    )
+    print(p_bias)
+    cat("\n")
+
+    # --- 4.2 Relative Bias Distribution ---
+    cat("\n\n**Relative Bias Distribution**\n")
+    #| label: fig-relbias-dist-category
+    #| fig-cap: !expr paste("Relative Bias (Capped +/- 2) for", cat_name, "-", cond_title_base)
+
+    current_relbias_plot_data <- category_results_subset %>%
+      filter(abs(true_value) > 1e-6 & !is.na(true_value) & is.finite(bias)) %>%
+      mutate(
+        rel_bias_calc = bias / abs(true_value),
+        rel_bias_capped = pmax(-2, pmin(2, rel_bias_calc))
+      )
+
+    if (nrow(current_relbias_plot_data) > 0) {
+      p_relbias <- plot_boxplot_dist_by_category(
+        data = current_relbias_plot_data,
+        y_var = "rel_bias_capped",
+        category_name = cat_name,
+        title_suffix = cond_title_base,
+        y_label = "Relative Bias",
+        hline_val = 0,
+        param_levels_arg = category_params
+      ) # Use same category_params
+      print(p_relbias)
+    } else {
+      cat("\n*(No data for Relative Bias plot for this category)*\n")
+    }
+    cat("\n")
+
+    # --- 4.3 Posterior SD Distribution ---
+    cat("\n\n**Posterior Standard Deviation Distribution**\n")
+    #| label: fig-postsd-dist-category
+    #| fig-cap: !expr paste("Posterior SD Distribution for", cat_name, "-", cond_title_base)
+
+    p_postsd <- plot_boxplot_dist_by_category(
+      data = category_results_subset,
+      y_var = "post_sd",
+      category_name = cat_name,
+      title_suffix = cond_title_base,
+      y_label = "Posterior SD",
+      hline_val = NULL,
+      param_levels_arg = category_params
+    )
+    print(p_postsd)
+    cat("\n")
+
+    # --- 4.4 RMSE Summary ---
+    cat("\n\n**RMSE Summary**\n")
+    #| label: fig-rmse-bar-category
+    #| fig-cap: !expr paste("RMSE per Parameter for", cat_name, "-", cond_title_base)
+
+    if (nrow(category_summary_subset) > 0) {
+      p_rmse <- plot_rmse_bar_by_category(
+        data = category_summary_subset,
+        category_name = cat_name,
+        title_suffix = cond_title_base,
+        param_levels_arg = category_params
+      )
+      print(p_rmse)
+    } else {
+      cat("\n*(Summary data for RMSE plot not available for this category)*\n")
+    }
+    cat("\n")
+  } # End INNER loop over categories
+
+  cat("\n\n---\n\n") # Add horizontal rule between main conditions
+}) # End OUTER pwalk loop over conditions
+```
