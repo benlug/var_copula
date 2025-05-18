@@ -50,15 +50,15 @@ setwd(BASE_DIR)
 
 factor_levels <- list(
   dgp_copula = c("gaussian", "clayton"),
-  dgp_alpha1 = c(-5.0, 5.0),
-  dgp_alpha2 = c(-5.0, 5.0),
-  dgp_tau = c(0.2, 0.5),
+  dgp_alpha1 = c(-8.0, 8.0),
+  dgp_alpha2 = c(-8.0, 8.0),
+  dgp_tau = c(0.2, 0.4),
   T_levels = c(30, 100),
-  phi11 = c(0.6),
-  phi22 = c(0.6),
-  phi12 = c(0.2),
-  phi21 = c(0.2),
-  replications = 24
+  phi11 = c(0.2, 0.6),
+  phi22 = c(0.2, 0.6),
+  phi12 = c(0.0, 0.2),
+  phi21 = c(0.0, 0.2),
+  replications = 60
 )
 
 
@@ -234,7 +234,7 @@ if (run_fitting) {
       fits_dir = FITS_DIR,
       stan_models_dir = BASE_DIR, # Assumes .stan files are in BASE_DIR
       sim_conditions_file = conditions_file,
-      num_cores = parallel::detectCores() - 4 # Optional parallel
+      num_cores = parallel::detectCores() - 1 # Optional parallel
     )
     cat("--- Model Fitting Finished ---\n")
   }

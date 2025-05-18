@@ -169,7 +169,7 @@ fit_specific_models_worker <- function(data_filepath,
 fit_var1_copula_models <- function(
     data_dir, fits_dir, stan_models_dir, sim_conditions_file,
     stan_iter = 4000, stan_warmup = 2000, stan_chains = 4,
-    stan_adapt_delta = 0.80, stan_max_treedepth = 12,
+    stan_adapt_delta = 0.99, stan_max_treedepth = 12,
     num_cores = parallel::detectCores() %||% 1,
     debug_mode = FALSE, debug_file_limit = NULL,
     log_file = file.path(fits_dir, "stan_fit_errors.log")) {
@@ -342,8 +342,9 @@ fit_var1_copula_models <- function(
       fname <- err$file
       current_msg <- err$error
       severity <- ifelse(grepl("FATAL", current_msg), 3, ifelse(grepl("ERROR|FAILED", current_msg), 2, 1))
-      if (!fname %in% names(error_summary) || severity > error_summary[[fname]]$severity)
+      if (!fname %in% names(error_summary) || severity > error_summary[[fname]]$severity) {
         error_summary[[fname]] <- list(msg = current_msg, severity = severity)
+      }
     }
     if (length(error_summary) > 0) {
       error_df <- data.frame(
@@ -358,8 +359,9 @@ fit_var1_copula_models <- function(
         cat(sprintf("  - %s: %s\n", error_df$file[i], error_df$msg[i]))
         printed_count <- i
       }
-      if (nrow(error_df) > printed_count)
+      if (nrow(error_df) > printed_count) {
         cat(sprintf("  (... %d more errors ...)\n", nrow(error_df) - printed_count))
+      }
     }
     if (!is.null(log_file)) {
       log_conn <- file(log_file, open = "a")
