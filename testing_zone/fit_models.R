@@ -283,14 +283,26 @@ fit_var1_copula_models <- function(
     .export = vars_to_export, .errorhandling = "pass", .verbose = FALSE
   )
 
+  progress_bar <- NULL
+  progress_index <- 0
+  if (debug_mode) {
+    progress_bar <- utils::txtProgressBar(min = 0, max = length(data_files_to_process), style = 3)
+  }
+
   results_list <- run_engine(foreach_obj, {
-    fit_specific_models_worker(
+    res <- fit_specific_models_worker(
       data_filepath = f, model_definitions = compiled_models_list, fits_dir = fits_dir,
       stan_iter = stan_iter, stan_warmup = stan_warmup, stan_chains = stan_chains,
       stan_adapt_delta = stan_adapt_delta, stan_max_treedepth = stan_max_treedepth,
       debug_mode = debug_mode
     )
+    if (!is.null(progress_bar)) {
+      progress_index <<- progress_index + 1
+      utils::setTxtProgressBar(progress_bar, progress_index)
+    }
+    res
   })
+  if (!is.null(progress_bar)) close(progress_bar)
   end_time_loop <- Sys.time()
   cat(sprintf("\nLoop finished. Time: %.2f mins.\n", difftime(end_time_loop, start_time_loop, units = "mins")))
 
