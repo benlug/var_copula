@@ -4,5 +4,7 @@
 *.js
 *.css
 *.woff
+*.csv
+*.pdf
 
 skewnormal/
