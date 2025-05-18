@@ -16,6 +16,7 @@ library(ggplot2)
 library(this.path)
 library(purrr)
 library(stringr)
+library(grid)
 
 # --- Configuration ---
 RESULTS_DIR <- getwd()
@@ -229,8 +230,8 @@ cat("Saved", plot_saved_count, "aggregated diagnostic plots.\n")
 # --- Generate and Save Faceted Diagnostic Plots ---
 cat("\nGenerating faceted diagnostic plots...\n")
 plot_saved_count <- 0
-# Define faceting structure (T vs Alphas + Copula) - adjust if too busy
-facet_formula <- T_fac ~ dgp_alpha1_fac + dgp_alpha2_fac + dgp_copula_fac
+# Define faceting structure including Tau
+facet_formula <- T_fac + dgp_tau_fac ~ dgp_alpha1_fac + dgp_alpha2_fac + dgp_copula_fac
 cat("Using facet formula:", deparse(facet_formula), "\n")
 
 if (nrow(sampler_joined_df) > 0) {
@@ -314,6 +315,88 @@ if (nrow(results_joined_df) > 0) {
   plot_saved_count <- plot_saved_count + 1
 }
 cat("Saved", plot_saved_count, "faceted diagnostic plots.\n")
+
+# --- Per-Condition PDF Plots ---
+condition_info_df <- sim_conditions_df %>%
+  mutate(
+    T_fac = factor(paste0("T=", T), levels = paste0("T=", T_levels)),
+    dgp_alpha1_fac = factor(paste0("A1=", dgp_alpha1), levels = paste0("A1=", dgp_alpha1_levels)),
+    dgp_alpha2_fac = factor(paste0("A2=", dgp_alpha2), levels = paste0("A2=", dgp_alpha2_levels)),
+    dgp_copula_fac = factor(paste0("Cop=", str_to_title(dgp_copula_type)), levels = paste0("Cop=", str_to_title(dgp_copula_levels))),
+    dgp_tau_fac = factor(paste0("Tau=", dgp_tau), levels = paste0("Tau=", dgp_tau_levels))
+  ) %>%
+  select(condition_id, T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac, phi11, phi12, phi21, phi22)
+
+cat("Generating per-condition convergence PDFs...\n")
+purrr::pwalk(condition_info_df, function(condition_id, T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac, phi11, phi12, phi21, phi22) {
+  cond_res <- results_joined_df %>% filter(condition_id == !!condition_id)
+  cond_samp <- sampler_joined_df %>% filter(condition_id == !!condition_id)
+  if (nrow(cond_res) == 0 && nrow(cond_samp) == 0) return()
+  pdf_file <- file.path(PLOTS_DIR, sprintf("convergence_cond_%03d.pdf", condition_id))
+  grDevices::pdf(pdf_file, width = 7, height = 5)
+  grid::grid.newpage()
+  grid::grid.text(sprintf("Condition %03d\n%s %s %s %s %s\nphi11=%.2f phi12=%.2f phi21=%.2f phi22=%.2f", condition_id, T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac, phi11, phi12, phi21, phi22), gp = grid::gpar(cex = 0.9))
+  if (nrow(cond_samp) > 0) {
+    p_div <- ggplot(cond_samp, aes(x = fit_type, y = divergences, fill = fitted_model_code)) +
+      geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
+      geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +
+      fill_scale_viridis +
+      labs(title = "Divergences", x = "Fit Type", y = "Count") +
+      theme(legend.position = "bottom")
+    print(p_div)
+
+    p_efmi <- ggplot(cond_samp, aes(x = fit_type, y = eFMI, fill = fitted_model_code)) +
+      geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
+      geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +
+      geom_hline(yintercept = 0.3, lty = "dashed", color = "red") +
+      fill_scale_viridis +
+      guides(fill = "none") +
+      labs(title = "E-FMI", x = "Fit Type", y = "E-FMI")
+    print(p_efmi)
+
+    p_accept <- ggplot(cond_samp, aes(x = fit_type, y = avg_accept_stat, fill = fitted_model_code)) +
+      geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
+      geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +
+      fill_scale_viridis +
+      guides(fill = "none") +
+      labs(title = "Avg Acceptance", x = "Fit Type", y = "Acceptance")
+    print(p_accept)
+
+    p_step <- ggplot(cond_samp, aes(x = fit_type, y = avg_stepsize, fill = fitted_model_code)) +
+      geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
+      geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +
+      fill_scale_viridis +
+      guides(fill = "none") +
+      labs(title = "Avg Stepsize", x = "Fit Type", y = "Stepsize")
+    print(p_step)
+  }
+  if (nrow(cond_res) > 0) {
+    avg_rhat <- cond_res %>% group_by(condition_id, rep_i, fitted_model_code, fit_type) %>% summarise(avg_Rhat = mean(Rhat, na.rm = TRUE), .groups = "drop")
+    p_rhat <- ggplot(avg_rhat, aes(x = fit_type, y = avg_Rhat, fill = fitted_model_code)) +
+      geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
+      geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +
+      geom_hline(yintercept = 1.05, lty = "dashed", color = "red") +
+      fill_scale_viridis +
+      guides(fill = "none") +
+      coord_cartesian(ylim = c(0.99, 1.06)) +
+      labs(title = "Average Rhat", x = "Fit Type", y = "Avg Rhat")
+    print(p_rhat)
+
+    med_neff <- cond_res %>% group_by(condition_id, rep_i, fitted_model_code, fit_type) %>% summarise(med_n_eff = median(n_eff, na.rm = TRUE), .groups = "drop")
+    p_neff <- ggplot(med_neff, aes(x = fit_type, y = med_n_eff, fill = fitted_model_code)) +
+      geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
+      geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +
+      fill_scale_viridis +
+      guides(fill = "none") +
+      scale_y_log10(limits = c(10, NA), oob = scales::squish, breaks = scales::log_breaks(n = 4)) +
+      annotation_logticks(sides = "l") +
+      labs(title = "Median N_eff", x = "Fit Type", y = "Median N_eff (log)")
+    print(p_neff)
+  }
+  grDevices::dev.off()
+  cat("Saved", pdf_file, "\n")
+})
+
 cat("Plots saved in:", PLOTS_DIR, "\n")
 
 cat("\n--- Convergence Analysis Script Finished ---\n")
