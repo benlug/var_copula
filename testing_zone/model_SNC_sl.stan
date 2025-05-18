@@ -37,7 +37,6 @@ parameters {
   real<lower=-1, upper=1> phi22; // VAR param
 
   // Residual Distribution Parameters (Skew-Normal)
-  vector[2] xi;             // Location parameter (SN)
   vector<lower=0>[2] omega; // Scale parameter (SN, omega > 0)
   vector[2] alpha;          // Shape parameter (SN)
 
@@ -47,8 +46,10 @@ parameters {
 
 transformed parameters {
   matrix[2, 2] Phi;
+  vector[2] xi;
   Phi[1, 1] = phi11; Phi[1, 2] = phi12;
   Phi[2, 1] = phi21; Phi[2, 2] = phi22;
+  xi = -omega .* (alpha ./ sqrt(1 + square(alpha))) * sqrt(2 / pi());
 }
 
 model {
@@ -58,9 +59,9 @@ model {
   phi12 ~ normal(0, 0.5);
   phi21 ~ normal(0, 0.5);
   phi22 ~ normal(0, 0.5);
-  xi ~ normal(0, 1);
+  // Priors for Skew-Normal parameters (xi determined by alpha and omega)
   omega ~ normal(0, 1); // Half-Normal implied
-  alpha ~ cauchy(0, 5);
+  alpha ~ cauchy(0, 5);   // Reasonably wide prior for shape
   theta ~ gamma(2, 1);  // Prior for theta > 0
 
   // Likelihood Calculation

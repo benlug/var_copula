@@ -84,7 +84,6 @@ fit_specific_models_worker <- function(data_filepath,
     if (grepl("^N", model_code)) { # Normal Margins
       base_list$sigma <- c(max(0.01, sd_y1 * stats::runif(1, 0.5, 1.5)), max(0.01, sd_y2 * stats::runif(1, 0.5, 1.5)))
     } else { # Skew-Normal Margins
-      base_list$xi <- stats::rnorm(2, 0, 0.1)
       base_list$omega <- c(max(0.01, sd_y1 * stats::runif(1, 0.5, 1.5)), max(0.01, sd_y2 * stats::runif(1, 0.5, 1.5)))
       base_list$alpha <- stats::rnorm(2, 0, 1.0)
     }
