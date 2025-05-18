@@ -228,7 +228,9 @@ if (nrow(condition_grid_plot) == 0) {
   purrr::pwalk(condition_grid_plot, function(condition_id, T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac, phi11, phi12, phi21, phi22) {
     cond_res <- results_joined_df %>% filter(condition_id == !!condition_id)
     cond_sum <- summary_df %>% filter(condition_id == !!condition_id)
-    if (nrow(cond_res) == 0) return()
+    if (nrow(cond_res) == 0) {
+      return()
+    }
     pdf_file <- file.path(PLOTS_DIR, sprintf("param_recov_cond_%03d.pdf", condition_id))
     grDevices::pdf(pdf_file, width = 11, height = 6)
     grid::grid.newpage()
@@ -244,27 +246,30 @@ if (nrow(condition_grid_plot) == 0) {
       if (length(category_params) == 0 || nrow(cond_res %>% filter(param_category == cat_name)) == 0) next
       for (pt in plot_types) {
         plot_obj <- NULL
-        tryCatch({
-          if (pt$type %||% "box" == "box") {
-            plot_data <- cond_res
-            if (pt$metric == "rel_bias_capped") {
-              plot_data <- plot_data %>%
-                filter(abs(true_value) > 1e-6 & !is.na(true_value) & is.finite(bias)) %>%
-                mutate(rel_bias_capped = pmax(-2, pmin(2, rel_bias)))
-              if (nrow(plot_data) == 0) stop("No data for rel bias")
+        tryCatch(
+          {
+            if (pt$type %||% "box" == "box") {
+              plot_data <- cond_res
+              if (pt$metric == "rel_bias_capped") {
+                plot_data <- plot_data %>%
+                  filter(abs(true_value) > 1e-6 & !is.na(true_value) & is.finite(bias)) %>%
+                  mutate(rel_bias_capped = pmax(-2, pmin(2, rel_bias)))
+                if (nrow(plot_data) == 0) stop("No data for rel bias")
+              }
+              plot_obj <- plot_boxplot_dist_agg(plot_data, pt$metric, cat_name, paste(T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac), pt$label, pt$hline, category_params)
+            } else if (pt$type == "bar") {
+              if (nrow(cond_sum %>% filter(param_category == cat_name)) > 0) {
+                plot_obj <- plot_rmse_bar_agg(cond_sum, cat_name, paste(T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac), category_params)
+              } else {
+                stop("No summary data for RMSE")
+              }
             }
-            plot_obj <- plot_boxplot_dist_agg(plot_data, pt$metric, cat_name, paste(T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac), pt$label, pt$hline, category_params)
-          } else if (pt$type == "bar") {
-            if (nrow(cond_sum %>% filter(param_category == cat_name)) > 0) {
-              plot_obj <- plot_rmse_bar_agg(cond_sum, cat_name, paste(T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac), category_params)
-            } else {
-              stop("No summary data for RMSE")
-            }
+            if (!is.null(plot_obj)) print(plot_obj)
+          },
+          error = function(e) {
+            cat(paste0("     ERROR plot cond", condition_id, ": ", e$message, "\n"))
           }
-          if (!is.null(plot_obj)) print(plot_obj)
-        }, error = function(e) {
-          cat(paste0("     ERROR plot cond", condition_id, ": ", e$message, "\n"))
-        })
+        )
       }
     }
     grDevices::dev.off()
