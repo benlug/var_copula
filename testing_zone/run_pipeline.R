@@ -44,7 +44,7 @@ factor_levels <- list(
   phi22 = c(0.5),
   phi12 = c(0.2),
   phi21 = c(0.2),
-  replications = 64 # SET TO SMALL NUMBER FOR TESTING (e.g., 2-4)
+  replications = 32 # SET TO SMALL NUMBER FOR TESTING (e.g., 2-4)
   # replications = 4
 )
 
