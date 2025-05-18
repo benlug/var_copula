@@ -15,11 +15,6 @@ functions {
 
     if (theta <= eps) return negative_infinity(); // theta must be > 0
 
-    real term1 = (1.0 + theta) * log(theta); // Correction: Stan uses log(theta) * (1+theta) form? No, log(1+theta) is simpler.
-    // Simpler form: log(1+theta) - (1+theta)*log(u*v) - (2+1/theta)*log(u^(-theta) + v^(-theta) - 1)
-    // Let's use the PDF form C(u,v) = (1+theta) * (u*v)^(-1-theta) * (u^(-theta) + v^(-theta) - 1)^(-2-1/theta)
-    // log C(u,v) = log(1+theta) + (-1-theta)*(log(u)+log(v)) + (-2-1/theta)*log(u^(-theta) + v^(-theta) - 1)
-
     real log_u = log(u_clamp);
     real log_v = log(v_clamp);
 
