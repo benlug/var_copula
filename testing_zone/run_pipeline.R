@@ -58,7 +58,7 @@ factor_levels <- list(
   phi22 = c(0.6),
   phi12 = c(0.2),
   phi21 = c(0.2),
-  replications = 25
+  replications = 24
 )
 
 
@@ -234,7 +234,7 @@ if (run_fitting) {
       fits_dir = FITS_DIR,
       stan_models_dir = BASE_DIR, # Assumes .stan files are in BASE_DIR
       sim_conditions_file = conditions_file,
-      num_cores = parallel::detectCores() - 1 # Optional parallel
+      num_cores = parallel::detectCores() - 4 # Optional parallel
     )
     cat("--- Model Fitting Finished ---\n")
   }
