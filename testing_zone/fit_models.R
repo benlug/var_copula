@@ -172,7 +172,9 @@ fit_var1_copula_models <- function(
     stan_iter = 4000, stan_warmup = 2000, stan_chains = 4,
     stan_adapt_delta = 0.80, stan_max_treedepth = 12,
     num_cores = parallel::detectCores() %||% 1,
-    debug_mode = FALSE, debug_file_limit = NULL) {
+    debug_mode = FALSE, debug_file_limit = NULL,
+    log_file = file.path(fits_dir, "stan_fit_errors.log")) {
+  # log_file: path to save Stan fitting errors; overwritten each run
   # Stan Options & Core Management
   rstan::rstan_options(auto_write = TRUE)
   original_mc_cores <- getOption("mc.cores", 1L)
@@ -194,6 +196,10 @@ fit_var1_copula_models <- function(
   if (!dir.exists(fits_dir)) dir.create(fits_dir, recursive = TRUE)
   if (!file.exists(sim_conditions_file)) stop("Sim conditions file not found: ", sim_conditions_file)
 
+  if (!is.null(log_file)) {
+    try(suppressWarnings(file.remove(log_file)), silent = TRUE)
+  }
+
   # Stan Model Files
   model_files <- list(
     NG = file.path(stan_models_dir, "model_NG_sl.stan"), NC = file.path(stan_models_dir, "model_NC_sl.stan"),
@@ -212,7 +218,11 @@ fit_var1_copula_models <- function(
       compiled_models_list[["SG"]] <- list(short_name = "SG", compiled_model = stan_model(model_files$SG, model_name = "SN_Gauss"))
       compiled_models_list[["SC"]] <- list(short_name = "SC", compiled_model = stan_model(model_files$SC, model_name = "SN_Clayton"))
     },
-    error = function(e) stop("Stan compile failed: ", e$message)
+    error = function(e) {
+      msg <- paste("Stan compile failed:", e$message)
+      if (!is.null(log_file)) try(write(msg, file = log_file, append = TRUE), silent = TRUE)
+      stop(msg)
+    }
   )
   cat("Stan models compiled.\n")
 
@@ -321,17 +331,39 @@ fit_var1_copula_models <- function(
       fname <- err$file
       current_msg <- err$error
       severity <- ifelse(grepl("FATAL", current_msg), 3, ifelse(grepl("ERROR|FAILED", current_msg), 2, 1))
-      if (!fname %in% names(error_summary) || severity > error_summary[[fname]]$severity) error_summary[[fname]] <- list(msg = current_msg, severity = severity)
+      if (!fname %in% names(error_summary) || severity > error_summary[[fname]]$severity)
+        error_summary[[fname]] <- list(msg = current_msg, severity = severity)
     }
     if (length(error_summary) > 0) {
-      error_df <- data.frame(file = names(error_summary), msg = sapply(error_summary, `[[`, "msg"), severity = sapply(error_summary, `[[`, "severity"), stringsAsFactors = FALSE)
+      error_df <- data.frame(
+        file = names(error_summary),
+        msg = sapply(error_summary, `[[`, "msg"),
+        severity = sapply(error_summary, `[[`, "severity"),
+        stringsAsFactors = FALSE
+      )
       error_df <- error_df[order(-error_df$severity, error_df$file), ]
       printed_count <- 0
       for (i in 1:min(nrow(error_df), 50)) {
         cat(sprintf("  - %s: %s\n", error_df$file[i], error_df$msg[i]))
         printed_count <- i
       }
-      if (nrow(error_df) > printed_count) cat(sprintf("  (... %d more errors ...)\n", nrow(error_df) - printed_count))
+      if (nrow(error_df) > printed_count)
+        cat(sprintf("  (... %d more errors ...)\n", nrow(error_df) - printed_count))
+    }
+    if (!is.null(log_file)) {
+      log_conn <- file(log_file, open = "a")
+      writeLines(sprintf("=== Stan fitting errors (%s) ===", Sys.time()), log_conn)
+      for (err in errors) {
+        writeLines(sprintf("%s: %s", err$file, err$error), log_conn)
+      }
+      close(log_conn)
+      cat(sprintf("Error log written to %s\n", log_file))
+    }
+  } else {
+    if (!is.null(log_file)) {
+      log_conn <- file(log_file, open = "a")
+      writeLines(sprintf("=== Stan fitting run (%s): no errors ===", Sys.time()), log_conn)
+      close(log_conn)
     }
   }
 
