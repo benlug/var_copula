@@ -156,6 +156,7 @@ simulate_all_conditions_var1 <- function(sim_conditions_df, output_dir) {
   if (!dir.exists(output_dir)) stop("Output directory does not exist: ", output_dir)
   total_conditions <- nrow(sim_conditions_df)
   cat(sprintf("Starting simulation: %d conditions, %d reps each...\n", total_conditions, sim_conditions_df$n_reps[1]))
+  flush.console()
 
   for (i in 1:total_conditions) {
     condition <- sim_conditions_df[i, ]
@@ -165,13 +166,16 @@ simulate_all_conditions_var1 <- function(sim_conditions_df, output_dir) {
       "--- Condition ID: %03d (T=%d, A1=%.1f, A2=%.1f, Cop=%s, Tau=%.1f) ---\n",
       cond_id, condition$T, condition$dgp_alpha1, condition$dgp_alpha2, condition$dgp_copula_type, condition$dgp_tau
     ))
+    flush.console()
+    pb <- utils::txtProgressBar(min = 0, max = n_replications, style = 3)
 
     for (j in 1:n_replications) {
-      if (j %% max(1, floor(n_replications / 5)) == 0 || j == 1 || j == n_replications) { # Print progress ~5 times
-        cat(sprintf("  Running replication %d of %d...\n", j, n_replications))
-      }
       simulate_one_replication_var1(condition, j, output_dir)
+      utils::setTxtProgressBar(pb, j)
     }
+    close(pb)
+    cat("\n")
+    flush.console()
   }
   cat("\n--- All simulations finished. ---\n")
   invisible(NULL)
