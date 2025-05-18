@@ -1,0 +1,218 @@
+---
+title: "Simulation Design"
+from: markdown+tex_math_single_backslash
+format: 
+  html:
+    toc: true
+    html-math-method: mathjax
+editor: 
+  markdown: 
+    wrap: 120
+---
+
+::: {.callout-note}
+# To-Do List
+- [ ] **Clayton Copula** (tail dependence / asymmetric association)  
+- [X] **Beta, Gamma, Exponential Margins** (nonnegative distributions)  
+- [X] **Location Shift Parameter** for nonnegative distributions  
+- [X] **Time Series Checks** (effect of variance of residual distribution and AR parameter)  
+- [ ] Find residual distribution parameters that are interesting from an applied researcher's perspective.
+:::
+
+## Introduction and Motivation
+
+Intensive longitudinal designs, in which repeated measurements of individuals are collected over extended time spans, have become increasingly prevalent in psychology, social sciences, and health research. Dynamic multilevel models enable researchers to capture both *within-person* processes and *cross-person* heterogeneity. A popular specification is the *multilevel VAR(1)* (vector autoregressive) model, often referred to as Dynamic Structural Equation Modeling (DSEM).
+
+### Rationale for Copula-Based Innovations
+
+A standard DSEM assumes normally distributed innovations at the within-person level. However, real-world data often depart from normality (e.g., skewness, heavy tails). Copulas offer a flexible framework for modeling these distributions, allowing us to (1) select non-normal marginal distributions for innovations, and (2) control dependence among them via a separate correlation (or copula) structure.
+
+This simulation study aims to focus on *skew normal margins* in the context of a multilevel VAR(1), quantifying how ignoring skewness affects parameter estimates, coverage, and inference, especially under moderate to strong autocorrelation.
+
+## Multilevel VAR(1) Model for the Simulation
+
+### Level-1: Within-Person Dynamics
+
+We consider a first-order VAR(1) process for each individual \(i\) on repeated measures \(t=1,\dots,T\). Let \(\mathbf{y}_{it} \in \mathbb{R}^p\). Decompose each observation into  
+\[
+\mathbf{y}_{it} = \boldsymbol{\mu}_i + \mathbf{y}_{it}^{(W)},
+\]  
+where \(\boldsymbol{\mu}_i\) is a person-specific mean, and \(\mathbf{y}_{it}^{(W)}\) is a time-varying deviation. The VAR(1) equation is
+
+\[
+\mathbf{y}_{it}^{(W)} 
+\;=\; 
+\boldsymbol{\Phi}_i \,\mathbf{y}_{i,t-1}^{(W)} 
+\;+\; 
+\boldsymbol{\varepsilon}_{it}, 
+\quad 
+t=2,\dots,T,
+\]
+
+where \(\boldsymbol{\varepsilon}_{it}\) is the vector of **innovations** (residuals) at time \(t\). Traditional DSEM sets
+\(\boldsymbol{\varepsilon}_{it} \sim \mathcal{N}(\mathbf{0}, \boldsymbol{\Sigma}^{(W)})\). In our study, we replace this with a **copula-based** approach allowing *skew normal margins*.
+
+### Level-2: Between-Person Random Effects
+
+1. **Random Means**:  
+   \[
+   \boldsymbol{\mu}_i = \boldsymbol{\gamma}_\mu + \mathbf{u}_{\mu,i}, 
+   \quad 
+   \mathbf{u}_{\mu,i} \sim \mathcal{N}(\mathbf{0}, \boldsymbol{\Sigma}_\mu).
+   \]
+
+2. **Random VAR(1) Parameters**:  
+   Each entry of \(\boldsymbol{\Phi}_i\) (i.e., \(\phi_{jk,i}\)) can be random:
+   \[
+   \phi_{jk,i} = \gamma_{\phi_{jk}} + u_{\phi_{jk}, i}, 
+   \quad 
+   u_{\phi_{jk},i} \sim \mathcal{N}(0, \sigma^2_{\phi_{jk}}).
+   \]
+
+Including these random effects captures heterogeneity in intercepts and lagged dynamics across individuals.
+
+## Simulation Design
+
+### Core Questions
+
+1. **How does ignoring skewness** (i.e., fitting a normal-based innovation model) affect estimates, coverage, and convergence when the true residual distribution is skewed?  
+2. **How do random means and random lag parameters** influence robustness under skewness and different autocorrelation strengths?  
+
+### Data-Generating Mechanisms (DGMs)
+
+We adopt a **Gaussian copula** with *skew normal* margins for the innovations \(\boldsymbol{\varepsilon}_{it}\). Specifically, for each individual \(i\) and time \(t\), we do:
+
+1. Draw \(\mathbf{z}_{it} \sim \mathcal{N}(\mathbf{0}, \mathbf{R})\).  
+2. Compute each component \(\varepsilon_{it,j} = F_{\text{SN},j}^{-1}(\Phi(z_{it,j}))\), where \(F_{\text{SN},j}\) is a skew normal CDF with a chosen shape parameter \(\alpha_j\).  
+3. Two shape configurations: 
+   - **Left-Skew**: \(\alpha_j < 0\).  
+   - **Right-Skew**: \(\alpha_j > 0\).
+
+We then insert \(\boldsymbol{\varepsilon}_{it}\) into the VAR(1) process to generate \(\mathbf{y}_{it}\). The *residual variance* and shape parameters are chosen so that overall variability remains comparable across conditions, making cross-condition comparisons more meaningful.
+
+### Simulation Factors
+
+1. **Skew Normal Margins**  
+   - Left-skew vs. right-skew parameters.  
+2. **Time Points (\(T\))**  
+   - 30 (short) vs. 100 (long).  
+3. **Number of Individuals (\(N\))**  
+   - 50 (smaller) vs. 300 (larger).  
+4. **Autoregressive Parameters (\(\phi_{jj,i}\))**  
+   - 0.2 (low carryover) vs. 0.5 (moderate carryover).  
+5. **Cross-Lag Coefficients (\(\phi_{jk,i}\))**  
+   - 0.0 (none) vs. 0.3 (moderate spillover).  
+6. **Random Means & Random Lags**  
+   - Either included or excluded.  
+7. **Residual Variances**  
+   - Adjusted so that the implied autocorrelation in each condition matches typical ranges in psychological/health data.
+
+We will also check the time series from each condition (ACF/partial ACF) to confirm we generate the intended dynamic properties.
+
+### Models Fitted
+
+1. **Naive Normal-Multilevel-Var(1)**  
+   - Baseline assumption of normal innovations.  
+2. **Copula-Based Model**  
+   - Correctly specifies skew normal margins (matching left or right skew in the DGM).  
+   - Retains a Gaussian copula correlation if the DGM has the same \(\mathbf{R}\).
+
+### Metrics and Analyses
+
+- **Bias, RMSE** for \(\boldsymbol{\mu}_i\) and \(\boldsymbol{\Phi}_i\).  
+- **Coverage Rates** of 95% intervals.  
+- **Convergence Diagnostics** (MCMC trace plots, PSR).  
+- **Type I Error & Power** for detecting cross-lag effects (0.0 vs. 0.3).  
+- **ACF & Partial ACF Checks** (time-series diagnostics) to confirm dynamic properties.  
+
+#### Simulation Conditions Summary
+
+| **Factor**                             | **Levels**                                                           | **Notes**                                                   |
+|---------------------------------------|---------------------------------------------------------------------|-------------------------------------------------------------|
+| **Skew Normal Margins**               | 1. Left-skew (<0) <br> 2. Right-skew (>0)                           | Distinct negative vs. positive skew.                       |
+| **T (Time Points)**                   | 30, 100                                                             | Short vs. longer time series.                              |
+| **N (Subjects)**                      | 50, 300                                                             | Smaller vs. mid-size sample.                               |
+| **Autoregressive Coeff.**            | 0.2, 0.5                                                            | Low vs. moderate inertia.                                  |
+| **Cross-Lag Coeffs**                 | 0.0, 0.3                                                            | None vs. moderate spillover.                               |
+| **Random Means & Lags**              | (a) none or (b) included                                            | Adds heterogeneity in intercepts and lag parameters.       |
+| **Residual Variances**               | Adjusted per AR setting                                             | Ensures stable autocorrelation levels.                     |
+| **Estimation**                        | (1) Normal-based <br>(2) Copula-based (skew normal)                 | Compare naive vs. correct specification.                   |
+| **Replications**                      | 500–1,000                                                           | Evaluate bias, coverage, etc.                              |
+| **Time Series Checks**               | ACF, partial ACF, sample path visuals                               | Verify each condition’s simulation.                        |
+
+---
+
+## Appendix (Theoretical Details & Extensions)
+
+### A. Copulas and Beyond
+- **Clayton Copula**: Useful for capturing asymmetric tail dependence, potentially relevant in certain psychological or clinical data with extreme co-movements.  
+
+### B. Beta/Gamma/Exponential Margins
+- These positive-only distributions can be integrated if a **shift** parameter is introduced, i.e., \(\varepsilon_{it} = \delta + X_{it}\).  
+- If \(\delta\) is negative, then the overall residual can still be below zero, allowing both negative and positive deviations.  
+
+### C. Hamaker Model 2 and Model 3  
+- **Model 2**: Random innovation (co)variance. Could be extended to random shape or location parameters in a copula framework.  
+- **Model 3**: Level-2 predictors influencing random effects, e.g., bridging baseline traits to dynamic parameters or distribution shapes.
+
+### D. Tail Dependence and Further Copulas
+- In many real contexts, extremes in innovations may co-occur more than Gaussian correlation alone predicts. Student-\(t\) or Archimedean (Clayton, Gumbel) copulas can capture such heavier tails or asymmetric extremes.
+
+### E. Additional Implementation Details
+- Software (e.g., Mplus or Stan) must allow flexible distributions at Level 1. Bayesian MCMC often used for estimation due to potentially complicated likelihood.  
+- Checking adequacy of prior assumptions, especially if random shape/shift parameters are introduced.
+
+---
+
+## Summary
+
+Our **multilevel VAR(1) simulation** systematically varies skewness (left, right), autocorrelation, sample size, and random effects. We compare a naive normal-based DSEM with a copula-based specification that correctly matches the skew normal margins. The **focus** is on how *mis-specification* affects bias, coverage, type I error, and time-series diagnostics. Subsequent expansions—incorporating tail-dependent copulas, shifted Gamma/Beta margins, or random distributional parameters—can build upon this core design.
+
+In short, **copula-based dynamic multilevel modeling** offers a powerful approach for analyzing real-world intensive data with significant skewness, improving inferences where standard normal assumptions fall short.
+
+## Apendix
+
+### Data Generation
+
+#### Copula and Margins
+
+- **Copula-Based Residuals:**  
+  The simulation code uses a Gaussian copula. In the function `draw_copula`, a bivariate normal vector \( \mathbf{Z} \) is generated with the specified correlation (here, \(\rho = 0.3\)). The transformation \( U = \Phi(Z) \) produces uniform variates that capture the intended dependency. This is the standard approach in copula-based modeling and is correctly implemented.
+
+- **Normal Margins:**  
+  Each uniform variate is transformed using the inverse normal CDF (via `qnorm` in `draw_from_normal`) with parameters mean \(=0\) and sd \(=1\). This ensures that the marginal distributions of the innovations are indeed normal. The simulation then adds these residuals to the VAR(1) mean (computed via the specified \(\phi\) coefficients), yielding:
+  \[
+  y_{t} = \Phi\, y_{t-1} + \varepsilon_{t}
+  \]
+  where \(\varepsilon_{t}\) are generated as described.
+
+#### VAR(1) Process
+
+- **Initialization and Recursion:**  
+  The process starts at \(\mathbf{y}_1 = (0,0)\) and then iterates from \(t=2\) to \(T\), updating each observation by adding the copula-transformed residuals to the AR(1) predictions. Although a burn-in period is not used (which might be a minor consideration in some contexts), for moderate \(T\) (here \(T = 200\)) this is acceptable given the study’s focus.
+
+- **Consistency:**  
+  The simulation conditions (e.g., the \(\phi\) values and residual distributions) are stored along with each replicate so that later analysis can compare estimated parameters to the true generating values.
+
+### Model Formulation in Stan
+
+#### Likelihood Construction
+
+- **Marginal Densities:**  
+  In the Stan model, for each time point \(t\geq2\) the residuals
+  \[
+  e_{1,t} = y_{t,1} - (\phi_{11}\,y_{t-1,1} + \phi_{12}\,y_{t-1,2})
+  \]
+  and similarly for \(e_{2,t}\) are modeled as coming from normal distributions with parameters \(\mu_1, \sigma_1\) (and analogously for the second dimension). This is consistent with the simulation, where the innovations are normal with mean 0 and sd 1. (The extra location parameter \(\mu_1\) in the model is free but should be identified as close to 0 given the data.)
+
+- **Copula Density:**  
+  The transformation \( u_i = \text{normal\_cdf}(e_i, \mu_i, \sigma_i) \) converts each residual to the unit interval. The function `gaussian_copula_density` then adds the log density from the Gaussian copula. This multiplication of the marginal densities by the copula density follows the standard construction:
+  \[
+  f(e_1,e_2) = c\Big(F(e_1), F(e_2);\rho\Big)\,f(e_1) f(e_2).
+  \]
+  This is correctly implemented by adding the log densities (first for the marginals and then for the copula) inside the loop over \(t\).
+
+#### Parameterization and Priors
+
+- **Priors and Constraints:**  
+  The AR coefficients are constrained to \([-1, 1]\), and the copula parameter \(\rho\) is constrained similarly (with a slightly narrower uniform prior for safety). The priors for the residual distribution parameters (\(\mu_i\) and \(\sigma_i\)) are set broadly, which is typical in simulation studies where the true values (0 and 1, respectively) are known.
