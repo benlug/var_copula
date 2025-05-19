@@ -410,12 +410,13 @@ purrr::pwalk(condition_info_df, function(condition_id, T_fac, dgp_alpha1_fac, dg
     fit_path <- file.path(FITS_DIR, sprintf("fit_%s_cond%03d_rep%03d.rds", div_run$fitted_model_code, condition_id, div_run$rep_i))
     fit_obj <- safe_read_stanfit(fit_path)
     if (!is.null(fit_obj)) {
-      np <- do.call(rbind, rstan::get_sampler_params(fit_obj, inc_warmup = FALSE))[, "divergent__"]
+      np_df <- do.call(rbind, rstan::get_sampler_params(fit_obj, inc_warmup = FALSE))
+      np_df <- as.data.frame(np_df)[, "divergent__", drop = FALSE]
       arr <- rstan::extract(fit_obj, permuted = FALSE)
       par_names <- dimnames(arr)$parameters
       sel_pars <- head(par_names[!grepl("^lp__", par_names)], 5)
       if (length(sel_pars) >= 2) {
-        p_pairs <- bayesplot::mcmc_pairs(arr, pars = sel_pars, np = np)
+        p_pairs <- bayesplot::mcmc_pairs(arr, pars = sel_pars, np = np_df)
         print(p_pairs)
       }
     }
