@@ -50,14 +50,14 @@ setwd(BASE_DIR)
 
 factor_levels <- list(
   dgp_copula = c("gaussian", "clayton"),
-  dgp_alpha1 = c(-8.0, 8.0),
-  dgp_alpha2 = c(-8.0, 8.0),
+  dgp_alpha1 = c(-8.0),
+  dgp_alpha2 = c(8.0),
   dgp_tau = c(0.2, 0.4),
-  T_levels = c(30, 100),
-  phi11 = c(0.2, 0.6),
-  phi22 = c(0.2, 0.6),
-  phi12 = c(0.0, 0.2),
-  phi21 = c(0.0, 0.2),
+  T_levels = c(100),
+  phi11 = c(0.4),
+  phi22 = c(0.4),
+  phi12 = c(0.2),
+  phi21 = c(0.2),
   replications = 60
 )
 
