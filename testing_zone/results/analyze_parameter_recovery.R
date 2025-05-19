@@ -209,72 +209,52 @@ saveRDS(summary_df, summary_output_rds)
 write.csv(summary_df, summary_output_csv, row.names = FALSE)
 cat("Saved aggregated summary statistics.\n")
 
-# --- Generate and Save Plots ---
-cat("\nGenerating and saving plots...\n")
-condition_grid_plot <- sim_conditions_df %>%
-  mutate(
-    T_fac = factor(paste0("T=", T), levels = paste0("T=", T_levels)),
-    dgp_alpha1_fac = factor(paste0("A1=", dgp_alpha1), levels = paste0("A1=", dgp_alpha1_levels)),
-    dgp_alpha2_fac = factor(paste0("A2=", dgp_alpha2), levels = paste0("A2=", dgp_alpha2_levels)),
-    dgp_copula_fac = factor(paste0("Cop=", str_to_title(dgp_copula_type)), levels = paste0("Cop=", str_to_title(dgp_copula_levels))),
-    dgp_tau_fac = factor(paste0("Tau=", dgp_tau), levels = paste0("Tau=", dgp_tau_levels))
-  ) %>%
-  select(condition_id, T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac, phi11, phi12, phi21, phi22)
+# --- Generate and Save Faceted Plots ---
+cat("\nGenerating faceted parameter recovery plots...\n")
 
-if (nrow(condition_grid_plot) == 0) {
-  warning("No valid conditions found for plotting.", call. = FALSE)
-} else {
-  cat(paste("Generating plots for", nrow(condition_grid_plot), "conditions...\n"))
-  purrr::pwalk(condition_grid_plot, function(condition_id, T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac, phi11, phi12, phi21, phi22) {
-    cond_res <- results_joined_df %>% filter(condition_id == !!condition_id)
-    cond_sum <- summary_df %>% filter(condition_id == !!condition_id)
-    if (nrow(cond_res) == 0) {
-      return()
-    }
-    pdf_file <- file.path(PLOTS_DIR, sprintf("param_recov_cond_%03d.pdf", condition_id))
-    grDevices::pdf(pdf_file, width = 11, height = 6)
-    grid::grid.newpage()
-    grid::grid.text(sprintf("Condition %03d\n%s %s %s %s\nphi11=%.2f phi12=%.2f phi21=%.2f phi22=%.2f", condition_id, T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, phi11, phi12, phi21, phi22), gp = grid::gpar(cex = 0.9))
-    plot_types <- list(
-      list(metric = "bias", label = "Bias", hline = 0),
-      list(metric = "rel_bias_capped", label = "RelBias", hline = 0),
-      list(metric = "post_sd", label = "PostSD", hline = NULL),
-      list(metric = "rmse", label = "RMSE", hline = NULL, type = "bar")
-    )
-    for (cat_name in category_order) {
-      category_params <- intersect(master_param_order, unique(as.character(cond_res %>% filter(param_category == cat_name) %>% pull(parameter))))
-      if (length(category_params) == 0 || nrow(cond_res %>% filter(param_category == cat_name)) == 0) next
-      for (pt in plot_types) {
-        plot_obj <- NULL
-        tryCatch(
-          {
-            if (pt$type %||% "box" == "box") {
-              plot_data <- cond_res
-              if (pt$metric == "rel_bias_capped") {
-                plot_data <- plot_data %>%
-                  filter(abs(true_value) > 1e-6 & !is.na(true_value) & is.finite(bias)) %>%
-                  mutate(rel_bias_capped = pmax(-2, pmin(2, rel_bias)))
-                if (nrow(plot_data) == 0) stop("No data for rel bias")
-              }
-              plot_obj <- plot_boxplot_dist_agg(plot_data, pt$metric, cat_name, paste(T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac), pt$label, pt$hline, category_params)
-            } else if (pt$type == "bar") {
-              if (nrow(cond_sum %>% filter(param_category == cat_name)) > 0) {
-                plot_obj <- plot_rmse_bar_agg(cond_sum, cat_name, paste(T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac), category_params)
-              } else {
-                stop("No summary data for RMSE")
-              }
-            }
-            if (!is.null(plot_obj)) print(plot_obj)
-          },
-          error = function(e) {
-            cat(paste0("     ERROR plot cond", condition_id, ": ", e$message, "\n"))
+pdf_file <- file.path(PLOTS_DIR, "parameter_recovery_faceted.pdf")
+grDevices::pdf(pdf_file, width = 11, height = 6)
+
+plot_types <- list(
+  list(metric = "bias", label = "Bias", hline = 0),
+  list(metric = "rel_bias_capped", label = "RelBias", hline = 0),
+  list(metric = "post_sd", label = "PostSD", hline = NULL),
+  list(metric = "rmse", label = "RMSE", hline = NULL, type = "bar")
+)
+
+for (cat_name in category_order) {
+  category_params <- intersect(master_param_order, unique(as.character(results_joined_df %>% filter(param_category == cat_name) %>% pull(parameter))))
+  if (length(category_params) == 0 || nrow(results_joined_df %>% filter(param_category == cat_name)) == 0) next
+  for (pt in plot_types) {
+    plot_obj <- NULL
+    tryCatch(
+      {
+        if (pt$type %||% "box" == "box") {
+          plot_data <- results_joined_df
+          if (pt$metric == "rel_bias_capped") {
+            plot_data <- plot_data %>%
+              filter(abs(true_value) > 1e-6 & !is.na(true_value) & is.finite(bias)) %>%
+              mutate(rel_bias_capped = pmax(-2, pmin(2, rel_bias)))
+            if (nrow(plot_data) == 0) stop("No data for rel bias")
           }
-        )
+          plot_obj <- plot_boxplot_dist_agg(plot_data, pt$metric, cat_name, "All Conditions", pt$label, pt$hline, category_params)
+        } else if (pt$type == "bar") {
+          if (nrow(summary_df %>% filter(param_category == cat_name)) > 0) {
+            plot_obj <- plot_rmse_bar_agg(summary_df, cat_name, "All Conditions", category_params)
+          } else {
+            stop("No summary data for RMSE")
+          }
+        }
+        if (!is.null(plot_obj)) print(plot_obj)
+      },
+      error = function(e) {
+        cat(paste0("     ERROR plotting ", pt$metric, " for ", cat_name, ": ", e$message, "\n"))
       }
-    }
-    grDevices::dev.off()
-    cat("Saved", pdf_file, "\n")
-  })
+    )
+  }
 }
+
+grDevices::dev.off()
+cat("Saved", pdf_file, "\n")
 
 cat("\n--- Parameter Recovery Analysis Script Finished ---\n")
