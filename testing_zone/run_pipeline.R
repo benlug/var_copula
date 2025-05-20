@@ -23,13 +23,13 @@ factor_levels <- list(
   dgp_copula = c("gaussian", "clayton"),
   dgp_alpha1 = c(-9.0),
   dgp_alpha2 = c(9.0),
-  dgp_tau = c(0.3, 0.6),
-  T_levels = c(30, 100),
+  dgp_tau = c(0.4),
+  T_levels = c(500),
   phi11 = c(0.5),
   phi22 = c(0.5),
   phi12 = c(0.3),
   phi21 = c(0.3),
-  replications = 40
+  replications = 500
 )
 
 
@@ -113,8 +113,8 @@ var_scenarios <- var_scenarios_grid %>%
     mu1 = fixed_params$mu_intercepts[1],
     mu2 = fixed_params$mu_intercepts[2],
     target_variance = fixed_params$target_variance,
-  burnin = fixed_params$burnin
-) %>%
+    burnin = fixed_params$burnin
+  ) %>%
   rowwise() %>%
   mutate(
     # derive parameters for the dgp margins and copula
