@@ -20,12 +20,14 @@ library(stringr)
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
 # --- Helper Function for Fitting WORKER ---
+# log_file: optional path to append Stan messages and errors
 fit_specific_models_worker <- function(data_filepath,
                                        model_definitions,
                                        fits_dir,
                                        stan_iter, stan_warmup, stan_chains,
                                        stan_adapt_delta, stan_max_treedepth,
-                                       debug_mode = FALSE) {
+                                       debug_mode = FALSE,
+                                       log_file = NULL) {
   # --- Packages needed ---
   require(rstan)
   require(dplyr)
@@ -131,15 +133,20 @@ fit_specific_models_worker <- function(data_filepath,
 
     fit_obj <- NULL
     fit_error_msg <- NULL
+    sampling_msgs <- NULL
     start_time <- Sys.time()
     tryCatch(
       {
         current_refresh <- if (debug_mode) 500 else 0
-        # run stan to fit the model
-        fit_obj <- rstan::sampling(
-          object = compiled_model, data = stan_data, chains = stan_chains,
-          iter = stan_iter, warmup = stan_warmup, seed = common_seed_base + which(models_to_fit_codes == code),
-          init = init_list, refresh = current_refresh, control = stan_control
+        # run stan to fit the model; capture warnings/messages (e.g. divergences)
+        sampling_msgs <- capture.output(
+          fit_obj <- rstan::sampling(
+            object = compiled_model, data = stan_data, chains = stan_chains,
+            iter = stan_iter, warmup = stan_warmup,
+            seed = common_seed_base + which(models_to_fit_codes == code),
+            init = init_list, refresh = current_refresh, control = stan_control
+          ),
+          type = "message"
         )
         saveRDS(fit_obj, file = out_file)
       },
@@ -147,6 +154,13 @@ fit_specific_models_worker <- function(data_filepath,
         fit_error_msg <<- paste("Stan Err:", conditionMessage(e))
       }
     )
+    if (!is.null(log_file)) {
+      # Save Stan warnings (e.g., divergent transitions) alongside errors
+      log_conn <- file(log_file, "a")
+      if (length(sampling_msgs) > 0) writeLines(sampling_msgs, log_conn)
+      if (!is.null(fit_error_msg)) writeLines(fit_error_msg, log_conn)
+      close(log_conn)
+    }
     end_time <- Sys.time()
     elapsed_time <- difftime(end_time, start_time, units = "mins")
 
@@ -173,7 +187,7 @@ fit_var1_copula_models <- function(
     num_cores = parallel::detectCores() %||% 1,
     debug_mode = FALSE, debug_file_limit = NULL,
     log_file = file.path(fits_dir, "stan_fit_errors.log")) {
-  # log_file: path to save Stan fitting errors; overwritten each run
+  # log_file: path to save Stan fitting errors and warnings; overwritten each run
   # Stan Options & Core Management
   rstan::rstan_options(auto_write = TRUE)
   original_mc_cores <- getOption("mc.cores", 1L)
@@ -271,34 +285,39 @@ fit_var1_copula_models <- function(
   if (!exists("fit_specific_models_worker", mode = "function")) stop("Worker function not found.")
   vars_to_export <- c(
     "compiled_models_list", "fits_dir", "stan_iter", "stan_warmup", "stan_chains",
-    "stan_adapt_delta", "stan_max_treedepth", "debug_mode", "fit_specific_models_worker"
+    "stan_adapt_delta", "stan_max_treedepth", "debug_mode", "fit_specific_models_worker",
+    "log_file"
   )
 
-  foreach_obj <- foreach::foreach(
-    f = data_files_to_process, .packages = c("rstan", "dplyr", "tidyr", "stats", "stringr"),
-    .export = vars_to_export, .errorhandling = "pass", .verbose = FALSE
-  )
-
-  progress_bar <- NULL
-  progress_index <- 0
+  results_list <- NULL
   if (debug_mode) {
     progress_bar <- utils::txtProgressBar(min = 0, max = length(data_files_to_process), style = 3)
-  }
-
-  results_list <- run_engine(foreach_obj, {
-    res <- fit_specific_models_worker(
-      data_filepath = f, model_definitions = compiled_models_list, fits_dir = fits_dir,
-      stan_iter = stan_iter, stan_warmup = stan_warmup, stan_chains = stan_chains,
-      stan_adapt_delta = stan_adapt_delta, stan_max_treedepth = stan_max_treedepth,
-      debug_mode = debug_mode
-    )
-    if (!is.null(progress_bar)) {
-      progress_index <<- progress_index + 1
-      utils::setTxtProgressBar(progress_bar, progress_index)
+    results_list <- vector("list", length(data_files_to_process))
+    for (i in seq_along(data_files_to_process)) {
+      f <- data_files_to_process[i]
+      results_list[[i]] <- fit_specific_models_worker(
+        data_filepath = f, model_definitions = compiled_models_list, fits_dir = fits_dir,
+        stan_iter = stan_iter, stan_warmup = stan_warmup, stan_chains = stan_chains,
+        stan_adapt_delta = stan_adapt_delta, stan_max_treedepth = stan_max_treedepth,
+        debug_mode = debug_mode, log_file = log_file
+      )
+      utils::setTxtProgressBar(progress_bar, i)
     }
-    res
-  })
-  if (!is.null(progress_bar)) close(progress_bar)
+    close(progress_bar)
+  } else {
+    foreach_obj <- foreach::foreach(
+      f = data_files_to_process, .packages = c("rstan", "dplyr", "tidyr", "stats", "stringr"),
+      .export = vars_to_export, .errorhandling = "pass", .verbose = FALSE
+    )
+    results_list <- run_engine(foreach_obj, {
+      fit_specific_models_worker(
+        data_filepath = f, model_definitions = compiled_models_list, fits_dir = fits_dir,
+        stan_iter = stan_iter, stan_warmup = stan_warmup, stan_chains = stan_chains,
+        stan_adapt_delta = stan_adapt_delta, stan_max_treedepth = stan_max_treedepth,
+        debug_mode = debug_mode, log_file = log_file
+      )
+    })
+  }
   end_time_loop <- Sys.time()
   cat(sprintf("\nLoop finished. Time: %.2f mins.\n", difftime(end_time_loop, start_time_loop, units = "mins")))
 
