@@ -145,6 +145,7 @@ if (nrow(sampler_joined_df) > 0) {
     tryCatch(fun(x_finite, ...), error = function(e) NA)
   }
 
+  # summarize sampler diagnostics across replications
   sampler_summary_agg <- sampler_joined_df %>%
     filter(!is.na(fitted_model_code)) %>%
     group_by(condition_id, T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac, fit_type, fitted_model_code) %>%
@@ -179,6 +180,7 @@ cat("\nGenerating aggregated diagnostic plots...\n")
 fill_scale_viridis <- scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Fitted Model")
 
 if (nrow(sampler_joined_df) > 0) {
+  # violin and box plots across all conditions
   p_div_agg <- ggplot(sampler_joined_df, aes(x = fit_type, y = divergences, fill = fitted_model_code)) +
     geom_violin(trim = F, alpha = 0.6, na.rm = T, scale = "width") +
     geom_boxplot(width = 0.15, position = position_dodge(width = 0.9), outlier.shape = NA, alpha = 0.8, na.rm = T) +

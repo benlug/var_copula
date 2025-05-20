@@ -55,7 +55,6 @@ fit_specific_models_worker <- function(data_filepath,
   standard_model_code <- "NG"
   models_to_fit_codes <- unique(c(correct_model_code, standard_model_code))
 
-  if (debug_mode) cat(sprintf(" DBG(%d/%d): Models=%s\n", cond_num, rep_num, paste(models_to_fit_codes, collapse = ",")))
 
   # --- Prepare Stan Data ---
   y_stan_list <- vector("list", T_val)
@@ -71,9 +70,10 @@ fit_specific_models_worker <- function(data_filepath,
       return(paste("ERROR: Data prep failed", fname_base, ":", conditionMessage(e)))
     }
   )
+  # data list for stan
   stan_data <- list(T = T_val, y = y_stan_list)
 
-  # --- Initialization Function ---
+  # --- random starting values for stan ---
   generate_inits_sl <- function(model_code) {
     base_list <- list(
       mu = stats::rnorm(2, 0, 0.1), phi11 = stats::runif(1, -0.5, 0.5), phi12 = stats::runif(1, -0.3, 0.3),
@@ -129,13 +129,13 @@ fit_specific_models_worker <- function(data_filepath,
       next
     }
 
-    if (debug_mode) cat(sprintf(" DBG(%d/%d): Fit %s...\n", cond_num, rep_num, code))
     fit_obj <- NULL
     fit_error_msg <- NULL
     start_time <- Sys.time()
     tryCatch(
       {
         current_refresh <- if (debug_mode) 500 else 0
+        # run stan to fit the model
         fit_obj <- rstan::sampling(
           object = compiled_model, data = stan_data, chains = stan_chains,
           iter = stan_iter, warmup = stan_warmup, seed = common_seed_base + which(models_to_fit_codes == code),
@@ -181,11 +181,9 @@ fit_var1_copula_models <- function(
   if (debug_mode) {
     cores_for_chains <- min(stan_chains, parallel::detectCores(logical = FALSE) %||% 1L)
     cores_to_set <- max(1L, cores_for_chains)
-    cat(sprintf("--- DBG: mc.cores=%d ---\n", cores_to_set))
     num_cores <- 1
-  } else {
-    cat(sprintf("--- Normal Mode: mc.cores=%d, file cores=%d ---\n", cores_to_set, num_cores))
   }
+  cat(sprintf("--- using %d core(s) ---\n", cores_to_set))
   options(mc.cores = cores_to_set)
   on.exit(options(mc.cores = original_mc_cores), add = TRUE)
 
@@ -207,8 +205,8 @@ fit_var1_copula_models <- function(
   missing_files <- model_files[!sapply(model_files, file.exists)]
   if (length(missing_files) > 0) stop("Stan file(s) not found: ", paste(missing_files, collapse = ", "))
 
-  # Compile Models
-  cat("Compiling Stan models...\n")
+  # compile each stan model once
+  cat("compiling stan models...\n")
   compiled_models_list <- list()
   tryCatch(
     {
@@ -236,10 +234,8 @@ fit_var1_copula_models <- function(
   data_files_to_process <- all_data_files
   if (debug_mode && !is.null(debug_file_limit) && debug_file_limit > 0) {
     data_files_to_process <- all_data_files[1:min(debug_file_limit, length(all_data_files))]
-    cat(sprintf("!!! DBG: Processing first %d file(s) sequentially. !!!\n", length(data_files_to_process)))
-  } else {
-    cat(sprintf("Found %d simulation data files to process.\n", length(data_files_to_process)))
   }
+  cat(sprintf("found %d simulation files\n", length(data_files_to_process)))
   if (length(data_files_to_process) == 0) {
     cat("No data files selected.\n")
     return(invisible(NULL))
@@ -251,7 +247,7 @@ fit_var1_copula_models <- function(
   n_cores_actual <- 1
   if (!debug_mode) {
     n_cores_actual <- max(1, num_cores)
-    cat(sprintf("Setting up parallel cluster (%d cores)...\n", n_cores_actual))
+    cat(sprintf("starting parallel cluster with %d cores\n", n_cores_actual))
     if (!requireNamespace("doParallel", quietly = T) || !requireNamespace("foreach", quietly = T)) stop("Packages 'doParallel'/'foreach' needed.")
     if (foreach::getDoParRegistered()) try(doParallel::stopImplicitCluster(), silent = TRUE)
     cl <- tryCatch(parallel::makeCluster(n_cores_actual), error = function(e) stop("Cluster error: ", e$message))
@@ -269,7 +265,7 @@ fit_var1_copula_models <- function(
   }
 
   # Run Loop
-  cat(sprintf("Starting fitting (%s)...\n", if (debug_mode) "Seq Files/Parallel Chains" else "Parallel Files/Seq Chains"))
+  cat(sprintf("starting stan sampling (%s)\n", if (debug_mode) "seq files" else "parallel files"))
   start_time_loop <- Sys.time()
 
   if (!exists("fit_specific_models_worker", mode = "function")) stop("Worker function not found.")
@@ -329,9 +325,8 @@ fit_var1_copula_models <- function(
     }
   }
 
-  cat("--- Fitting Summary ---\n")
+  cat("--- fitting summary ---\n")
   cat(status_messages, sep = "\n")
-  cat("-----------------------\n")
   total_processed <- length(data_files_to_process)
   error_count <- length(errors)
   cat(sprintf("Summary: %d files attempted, %d reported errors.\n", total_processed, error_count))

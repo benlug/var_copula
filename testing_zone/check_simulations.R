@@ -13,7 +13,7 @@
 # --- Helper Functions ---
 
 compute_residuals_trueVAR <- function(y, mu, phi_mat) {
-  # (Function remains the same - checks dimensions)
+  # compute residuals under the true var(1) model
   if (!is.numeric(mu) || length(mu) != 2) stop("mu must be numeric vector length 2.")
   if (!is.matrix(phi_mat) || !all(dim(phi_mat) == c(2, 2))) stop("phi_mat must be 2x2 matrix.")
   if (!is.matrix(y)) y <- as.matrix(y)
@@ -27,6 +27,7 @@ compute_residuals_trueVAR <- function(y, mu, phi_mat) {
   res2 <- numeric(T_val - 1)
   for (t in 2:T_val) {
     y_lagged <- y[t - 1, ]
+    # var(1) mean equation
     cond_mean <- mu + phi_mat %*% y_lagged
     residuals_t <- y[t, ] - cond_mean
     res1[t - 1] <- residuals_t[1]
@@ -36,7 +37,7 @@ compute_residuals_trueVAR <- function(y, mu, phi_mat) {
 }
 
 plot_checks_for_replication <- function(df_rep, true_params, dgp_info, cond_id, rep_id) {
-  # (Function remains mostly the same, minor title update, less verbose warnings)
+  # produce diagnostic plots for one replication
   acf_fun <- stats::acf
   pacf_fun <- stats::pacf
   if (requireNamespace("forecast", quietly = TRUE)) {
@@ -152,6 +153,7 @@ run_post_sim_checks_var1 <- function(data_dir, checks_dir) {
     }
 
     # Simplified PDF filename
+    # save plots for this condition
     pdf_file <- file.path(checks_dir, sprintf("checks_cond_%03d.pdf", cond_id))
     pdf_opened <- FALSE
     tryCatch(
