@@ -1,12 +1,12 @@
-// file: model_SNC_sl.stan
-// Bivariate VAR(1) model assuming Skew-Normal margins and Clayton copula.
-// Single-level (no random effects).
+// model_snc_sl.stan
+// single-level bivariate var(1) with skew-normal margins
+// dependence is introduced via a clayton copula
 
 functions {
-  // Clayton copula log-density for 2 dimensions (same as NC model)
+  // clayton copula log-density for 2 dimensions (same as NC model)
   real clayton_copula_density_2d(real u, real v, real theta) {
     real log_lik = 0;
-    real eps = 1e-9; // Epsilon for clamping
+    real eps = 1e-9; // epsilon for clamping
     real u_clamp = fmax(eps, fmin(1.0 - eps, u));
     real v_clamp = fmax(eps, fmin(1.0 - eps, v));
     if (theta <= eps) return negative_infinity();
@@ -24,24 +24,23 @@ functions {
 }
 
 data {
-  int<lower=2> T;       // Number of time points
-  vector[2] y[T];       // Data: array of 2-element vectors y_t
+  int<lower=2> T;       // number of time points
+  vector[2] y[T];       // observed series y[t]
 }
 
 parameters {
-  // Global Parameters Only
-  vector[2] mu;                // Intercepts
-  real<lower=-1, upper=1> phi11; // VAR param
-  real<lower=-1, upper=1> phi12; // VAR param
-  real<lower=-1, upper=1> phi21; // VAR param
-  real<lower=-1, upper=1> phi22; // VAR param
+  vector[2] mu;                // intercepts for y1 and y2
+  real<lower=-1, upper=1> phi11; // effect of y1[t-1] on y1[t]
+  real<lower=-1, upper=1> phi12; // effect of y2[t-1] on y1[t]
+  real<lower=-1, upper=1> phi21; // effect of y1[t-1] on y2[t]
+  real<lower=-1, upper=1> phi22; // effect of y2[t-1] on y2[t]
 
-  // Residual Distribution Parameters (Skew-Normal)
-  vector<lower=0>[2] omega; // Scale parameter (SN, omega > 0)
-  vector[2] alpha;          // Shape parameter (SN)
+  // parameters for skew-normal margins
+  vector<lower=0>[2] omega; // scale
+  vector[2] alpha;          // shape
 
-  // Copula Parameter (Clayton)
-  real<lower=0> theta;           // Clayton copula parameter theta > 0
+  // clayton copula dependence parameter
+  real<lower=0> theta;
 }
 
 transformed parameters {
@@ -53,29 +52,29 @@ transformed parameters {
 }
 
 model {
-  // Priors
+  // priors
   mu ~ normal(0, 1);
   phi11 ~ normal(0, 0.5);
   phi12 ~ normal(0, 0.5);
   phi21 ~ normal(0, 0.5);
   phi22 ~ normal(0, 0.5);
-  // Priors for Skew-Normal parameters (xi determined by alpha and omega)
-  omega ~ normal(0, 1); // Half-Normal implied
-  alpha ~ cauchy(0, 5);   // Reasonably wide prior for shape
-  theta ~ gamma(2, 1);  // Prior for theta > 0
+  // priors for skew-normal parameters (xi determined by alpha and omega)
+  omega ~ normal(0, 1); // half-normal implied
+  alpha ~ cauchy(0, 5);   // reasonably wide prior for shape
+  theta ~ gamma(2, 1);  // prior for theta > 0
 
-  // Likelihood Calculation
+  // likelihood
   for (t in 2:T) {
     vector[2] y_curr = y[t];
     vector[2] y_prev = y[t-1];
     vector[2] cond_mean = mu + Phi * y_prev;
     vector[2] residuals = y_curr - cond_mean;
 
-    // 1. Add marginal log-likelihoods (Skew-Normal)
+    // add marginal log-likelihoods (skew-normal)
     target += skew_normal_lpdf(residuals[1] | xi[1], omega[1], alpha[1]);
     target += skew_normal_lpdf(residuals[2] | xi[2], omega[2], alpha[2]);
 
-    // 2. Calculate CDFs and add Clayton Copula density
+    // calculate cdfs and add clayton copula density
     real u1 = skew_normal_cdf(residuals[1] | xi[1], omega[1], alpha[1]);
     real u2 = skew_normal_cdf(residuals[2] | xi[2], omega[2], alpha[2]);
     target += clayton_copula_density_2d(u1, u2, theta);
@@ -83,6 +82,6 @@ model {
 }
 
 generated quantities {
-  // Optional: Calculate Kendall's Tau from theta
+  // optional: calculate Kendall's tau from theta
   real<lower=0, upper=1> tau = theta / (theta + 2.0);
 }
