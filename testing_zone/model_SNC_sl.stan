@@ -82,6 +82,5 @@ model {
 }
 
 generated quantities {
-  // optional: calculate Kendall's tau from theta
   real<lower=0, upper=1> tau = theta / (theta + 2.0);
 }

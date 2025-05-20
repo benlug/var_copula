@@ -75,17 +75,5 @@ model {
 }
 
 generated quantities {
-  // optional: calculate log-likelihood for model comparison
-  // real log_lik = 0;
-  // for (t in 2:T) {
-  //   vector[2] y_curr = y[t];
-  //   vector[2] y_prev = y[t-1];
-  //   vector[2] cond_mean = mu + Phi * y_prev;
-  //   vector[2] residuals = y_curr - cond_mean;
-  //   log_lik += normal_lpdf(residuals[1] | 0, sigma[1]);
-  //   log_lik += normal_lpdf(residuals[2] | 0, sigma[2]);
-  //   real u1 = normal_cdf(residuals[1] | 0, sigma[1]);
-  //   real u2 = normal_cdf(residuals[2] | 0, sigma[2]);
-  //   log_lik += gaussian_copula_density(u1, u2, rho);
-  // }
+
 }
