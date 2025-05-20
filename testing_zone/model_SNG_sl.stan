@@ -1,9 +1,9 @@
-// file: model_SNG_sl.stan
-// Bivariate VAR(1) model assuming Skew-Normal margins and Gaussian copula.
-// Single-level (no random effects).
+// model_sng_sl.stan
+// single-level bivariate var(1) with skew-normal margins
+// dependence is modeled with a gaussian copula
 
 functions {
-  // Gaussian copula log-density (same as NG model)
+  // gaussian copula log-density (same as NG model)
   real gaussian_copula_density(real u, real v, real rho) {
     real eps = 1e-9;
     real u_clamp = fmax(eps, fmin(1 - eps, u));
@@ -21,24 +21,23 @@ functions {
 }
 
 data {
-  int<lower=2> T;       // Number of time points
-  vector[2] y[T];       // Data: array of 2-element vectors y_t
+  int<lower=2> T;       // number of time points
+  vector[2] y[T];       // observed series y[t]
 }
 
 parameters {
-  // Global Parameters Only
-  vector[2] mu;                // Intercepts
-  real<lower=-1, upper=1> phi11; // VAR param
-  real<lower=-1, upper=1> phi12; // VAR param
-  real<lower=-1, upper=1> phi21; // VAR param
-  real<lower=-1, upper=1> phi22; // VAR param
+  vector[2] mu;                // intercepts for y1 and y2
+  real<lower=-1, upper=1> phi11; // effect of y1[t-1] on y1[t]
+  real<lower=-1, upper=1> phi12; // effect of y2[t-1] on y1[t]
+  real<lower=-1, upper=1> phi21; // effect of y1[t-1] on y2[t]
+  real<lower=-1, upper=1> phi22; // effect of y2[t-1] on y2[t]
 
-  // Residual Distribution Parameters (Skew-Normal)
-  vector<lower=0>[2] omega; // Scale parameter (SN, omega > 0)
-  vector[2] alpha;          // Shape parameter (SN)
+  // parameters for skew-normal margins
+  vector<lower=0>[2] omega; // scale
+  vector[2] alpha;          // shape
 
-  // Copula Correlation Parameter
-  real<lower=-1, upper=1> rho;   // Gaussian copula correlation
+  // gaussian copula correlation
+  real<lower=-1, upper=1> rho;
 }
 
 transformed parameters {
@@ -50,29 +49,29 @@ transformed parameters {
 }
 
 model {
-  // Priors
+  // priors
   mu ~ normal(0, 1);
   phi11 ~ normal(0, 0.5);
   phi12 ~ normal(0, 0.5);
   phi21 ~ normal(0, 0.5);
   phi22 ~ normal(0, 0.5);
   rho ~ normal(0, 0.5);
-  // Priors for Skew-Normal parameters (xi determined by alpha and omega)
-  omega ~ normal(0, 1);   // Prior for scale (Half-Normal implied, ~1)
-  alpha ~ cauchy(0, 5);   // Reasonably wide prior for shape
+  // priors for skew-normal parameters (xi determined by alpha and omega)
+  omega ~ normal(0, 1);   // prior for scale (half-normal implied, ~1)
+  alpha ~ cauchy(0, 5);   // reasonably wide prior for shape
 
-  // Likelihood Calculation
+  // likelihood
   for (t in 2:T) {
     vector[2] y_curr = y[t];
     vector[2] y_prev = y[t-1];
     vector[2] cond_mean = mu + Phi * y_prev;
     vector[2] residuals = y_curr - cond_mean;
 
-    // 1. Add marginal log-likelihoods (Skew-Normal)
+    // add marginal log-likelihoods (skew-normal)
     target += skew_normal_lpdf(residuals[1] | xi[1], omega[1], alpha[1]);
     target += skew_normal_lpdf(residuals[2] | xi[2], omega[2], alpha[2]);
 
-    // 2. Calculate CDFs and add Gaussian Copula density
+    // calculate cdfs and add gaussian copula density
     real u1 = skew_normal_cdf(residuals[1] | xi[1], omega[1], alpha[1]);
     real u2 = skew_normal_cdf(residuals[2] | xi[2], omega[2], alpha[2]);
     target += gaussian_copula_density(u1, u2, rho);
@@ -80,5 +79,5 @@ model {
 }
 
 generated quantities {
-  // Optional: Calculate log-likelihood
+  // optional: calculate log-likelihood
 }

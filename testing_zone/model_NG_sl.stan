@@ -1,9 +1,9 @@
-// file: model_NG_sl.stan
-// Bivariate VAR(1) model assuming Normal margins and Gaussian copula.
-// Single-level (no random effects).
+// model_ng_sl.stan
+// single-level bivariate var(1) with normal margins
+// dependence between residuals is modeled with a gaussian copula
 
 functions {
-  // Gaussian copula log-density
+  // gaussian copula log-density
   real gaussian_copula_density(real u, real v, real rho) {
     real eps = 1e-9;
     real u_clamp = fmax(eps, fmin(1 - eps, u));
@@ -12,7 +12,7 @@ functions {
     real z1 = inv_Phi(u_clamp);
     real z2 = inv_Phi(v_clamp);
     real rho_sq = square(rho);
-    if (rho_sq >= 1.0 - eps) return negative_infinity(); // Avoid issues near +/- 1
+    if (rho_sq >= 1.0 - eps) return negative_infinity(); // avoid issues near +/- 1
     real inv_1_minus_rho_sq = 1.0 / (1.0 - rho_sq);
     return -0.5 * log1m(rho_sq)
            - 0.5 * inv_1_minus_rho_sq * (square(z1) - 2.0 * rho * z1 * z2 + square(z2))
@@ -21,54 +21,53 @@ functions {
 }
 
 data {
-  int<lower=2> T;       // Number of time points
-  vector[2] y[T];       // Data: array of 2-element vectors y_t
+  int<lower=2> T;       // number of time points
+  vector[2] y[T];       // observed series y[t]
 }
 
 parameters {
-  // Global Parameters Only
-  vector[2] mu;                // Intercepts (fixed at 0 in sim, but estimate)
-  real<lower=-1, upper=1> phi11; // VAR param
-  real<lower=-1, upper=1> phi12; // VAR param
-  real<lower=-1, upper=1> phi21; // VAR param
-  real<lower=-1, upper=1> phi22; // VAR param
+  vector[2] mu;                // intercepts for y1 and y2
+  real<lower=-1, upper=1> phi11; // effect of y1[t-1] on y1[t]
+  real<lower=-1, upper=1> phi12; // effect of y2[t-1] on y1[t]
+  real<lower=-1, upper=1> phi21; // effect of y1[t-1] on y2[t]
+  real<lower=-1, upper=1> phi22; // effect of y2[t-1] on y2[t]
 
-  // Residual Distribution Parameters (Normal)
-  vector<lower=0>[2] sigma;      // Residual SDs (sigma1, sigma2)
+  // residual standard deviations for the normal margins
+  vector<lower=0>[2] sigma;
 
-  // Copula Correlation Parameter
-  real<lower=-1, upper=1> rho;   // Gaussian copula correlation
+  // gaussian copula correlation
+  real<lower=-1, upper=1> rho;
 }
 
 transformed parameters {
-  // Construct Phi matrix for convenience (optional)
+  // construct Phi matrix for convenience
   matrix[2, 2] Phi;
   Phi[1, 1] = phi11; Phi[1, 2] = phi12;
   Phi[2, 1] = phi21; Phi[2, 2] = phi22;
 }
 
 model {
-  // Priors (Weakly informative)
+  // priors (weakly informative)
   mu ~ normal(0, 1);
-  phi11 ~ normal(0, 0.5); // Centered at 0, allow moderate values
+  phi11 ~ normal(0, 0.5); // centered at 0, allow moderate values
   phi12 ~ normal(0, 0.5);
   phi21 ~ normal(0, 0.5);
   phi22 ~ normal(0, 0.5);
-  rho ~ normal(0, 0.5);   // Centered at 0, allows moderate correlation
-  sigma ~ normal(0, 1);   // Prior on SDs -> Half-Normal implied by lower=0 constraint
+  rho ~ normal(0, 0.5);   // centered at 0, allows moderate correlation
+  sigma ~ normal(0, 1);   // prior on sds -> half-normal implied by lower=0 constraint
 
-  // Likelihood Calculation
+  // likelihood
   for (t in 2:T) {
     vector[2] y_curr = y[t];
     vector[2] y_prev = y[t-1];
-    vector[2] cond_mean = mu + Phi * y_prev; // Calculate conditional mean
-    vector[2] residuals = y_curr - cond_mean; // Calculate residuals
+    vector[2] cond_mean = mu + Phi * y_prev; // conditional mean
+    vector[2] residuals = y_curr - cond_mean; // residuals
 
-    // 1. Add marginal log-likelihoods (Normal)
+    // add marginal log-likelihoods (normal)
     target += normal_lpdf(residuals[1] | 0, sigma[1]);
     target += normal_lpdf(residuals[2] | 0, sigma[2]);
 
-    // 2. Calculate CDFs and add Gaussian Copula density
+    // calculate cdfs and add gaussian copula density
     real u1 = normal_cdf(residuals[1] | 0, sigma[1]);
     real u2 = normal_cdf(residuals[2] | 0, sigma[2]);
     target += gaussian_copula_density(u1, u2, rho);
@@ -76,7 +75,7 @@ model {
 }
 
 generated quantities {
-  // Optional: Calculate log-likelihood if needed for model comparison
+  // optional: calculate log-likelihood for model comparison
   // real log_lik = 0;
   // for (t in 2:T) {
   //   vector[2] y_curr = y[t];
