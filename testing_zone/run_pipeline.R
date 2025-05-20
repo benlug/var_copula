@@ -72,10 +72,8 @@ fixed_params <- list(
 # --- Pipeline Control Flags ---
 run_simulation <- TRUE
 run_checks <- TRUE
-run_fitting <- FALSE
-run_processing <- FALSE # Assumes process_fits.R is updated for separate alphas
-# run_evaluation <- FALSE # Requires updated Quarto/R script
-# run_convergence <- FALSE # Requires updated Quarto/R script
+run_fitting <- TRUE
+run_processing <- TRUE
 
 # --- Directory Setup (Simplified Names) ---
 DATA_DIR <- file.path(BASE_DIR, "data")
@@ -184,11 +182,9 @@ sim_conditions_to_save <- var_scenarios %>%
   mutate(condition_id = row_number()) %>%
   select(condition_id, everything())
 
-conditions_file <- file.path(DATA_DIR, "sim_conditions.rds") # Simplified name
+conditions_file <- file.path(DATA_DIR, "sim_conditions.rds")
 saveRDS(sim_conditions_to_save, conditions_file)
 cat(sprintf("Generated %d conditions. Saved to: %s\n", nrow(sim_conditions_to_save), conditions_file))
-
-# --- Execute Pipeline Steps ---
 
 # 1. Simulation
 if (run_simulation) {
@@ -270,9 +266,3 @@ if (run_processing) {
     warning("Skipping processing, but required summary files are missing.", call. = FALSE)
   }
 }
-
-# --- Analysis Steps (Require Updates) ---
-cat("\n--- Analysis/Reporting steps skipped (require updated scripts) ---\n")
-
-cat("\n--- Pipeline execution complete (Sim, Checks, Fit, Process). ---\n")
-cat("--- NOTE: Analysis/Reporting scripts require updates. ---\n")

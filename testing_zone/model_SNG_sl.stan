@@ -79,5 +79,5 @@ model {
 }
 
 generated quantities {
-  // optional: calculate log-likelihood
+
 }
