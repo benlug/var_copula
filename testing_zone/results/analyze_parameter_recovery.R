@@ -115,7 +115,7 @@ if (nrow(sampler_info_df) > 0) {
 }
 cat("Data preparation complete.\n")
 
-# --- Helper Plotting Functions ---
+# --- helper plotting functions ---
 plot_boxplot_dist_agg <- function(data, y_var, category_name, title_suffix, y_label, hline_val = NULL, param_levels_arg) {
   y_sym <- sym(y_var)
   data_plot <- data %>%
@@ -167,7 +167,6 @@ plot_rmse_bar_agg <- function(data, category_name, title_suffix, param_levels_ar
     )
   return(p)
 }
-cat("Helper functions defined.\n")
 
 # --- Calculate Summary Statistics ---
 cat("Calculating aggregated summary statistics...\n")
@@ -178,6 +177,7 @@ summary_df <- results_joined_df %>%
     fit_type, fitted_model_code, parameter, param_category
   ) %>%
   filter(!is.na(dgp_alpha1_fac) & !is.na(dgp_alpha2_fac) & !is.na(dgp_tau_fac)) %>%
+  # compute bias and coverage summaries
   summarize(
     n_reps_param = n(), true_value = first(true_value), avg_est = mean(post_mean, na.rm = TRUE), sd_est = sd(post_mean, na.rm = TRUE),
     avg_bias = mean(bias, na.rm = TRUE), med_bias = median(bias, na.rm = TRUE), avg_rel_bias = mean(rel_bias, na.rm = TRUE),

@@ -36,6 +36,7 @@ cat("Loaded", nrow(sim_conditions_df), "simulation conditions.\n")
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
 safe_read_stanfit <- function(filename) {
+  # ensure the rds contains a valid stanfit with samples
   if (!file.exists(filename)) {
     return(NULL)
   }
@@ -66,6 +67,7 @@ safe_read_stanfit <- function(filename) {
 }
 
 calc_e_fmi <- function(energy_vec) {
+  # compute the energy fraction of missing information
   n <- length(energy_vec)
   if (n < 3) {
     return(NA_real_)
@@ -94,7 +96,7 @@ calc_e_fmi <- function(energy_vec) {
 }
 
 get_true_value_var1 <- function(param_name, true_params_list, fitted_model_type) {
-  # Handles separate alphas correctly
+  # return the true parameter value for comparison
   true_val <- NA_real_
   true_margin1_dist <- true_params_list$margin1_dist %||% NA_character_
   true_margin2_dist <- true_params_list$margin2_dist %||% NA_character_
@@ -143,6 +145,7 @@ get_true_value_var1 <- function(param_name, true_params_list, fitted_model_type)
 }
 
 get_param_category_var1 <- function(param_name) {
+  # group parameters for summarizing
   if (grepl("^phi\\d{2}$", param_name)) {
     "VAR Coeffs"
   } else if (grepl("^mu\\[\\d\\]$", param_name)) {

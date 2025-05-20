@@ -12,9 +12,10 @@ if (!requireNamespace("copula", quietly = TRUE)) stop("Package 'copula' is requi
 if (!requireNamespace("sn", quietly = TRUE)) stop("Package 'sn' is required for Skew-Normal.")
 if (!requireNamespace("mvtnorm", quietly = TRUE)) stop("Package 'mvtnorm' is required.") # Used implicitly by copula pkg
 
-# --- Helper Function: Generate Residuals from Copula ---
+# --- helper to draw residuals from the chosen copula ---
 generate_residuals <- function(n, margin1_dist, margin1_params,
                                margin2_dist, margin2_params, copula_info) {
+  # quantile functions for each margin
   qmargin1 <- switch(margin1_dist,
     "normal" = function(p) qnorm(p, mean = margin1_params$mean, sd = margin1_params$sd),
     "skewnormal" = function(p) sn::qsn(p, xi = margin1_params$xi, omega = margin1_params$omega, alpha = margin1_params$alpha, solver = "RFB"),
@@ -40,6 +41,7 @@ generate_residuals <- function(n, margin1_dist, margin1_params,
     error = function(e) stop(sprintf("Error creating copula '%s' with param %f: %s", copula_family, copula_param, e$message))
   )
 
+  # sample uniform pairs from the copula
   u <- tryCatch(
     {
       copula::rCopula(n, cop)
@@ -107,6 +109,7 @@ simulate_one_replication_var1 <- function(condition, rep_i, output_dir) {
       cat(sprintf("\nERROR: NA in lagged y t=%d Cond %d, Rep %d.\n", t, cond_id, rep_i))
       return(invisible(NULL))
     }
+    # var(1) mean equation
     predicted_mean <- mu + phi_mat %*% y_lagged
     y[t, ] <- predicted_mean + residuals_all[t, ]
   }
@@ -119,6 +122,7 @@ simulate_one_replication_var1 <- function(condition, rep_i, output_dir) {
   T_final <- nrow(y_final)
   sim_data_df <- data.frame(i = 1, t = 1:T_final, y1 = y_final[, 1], y2 = y_final[, 2])
 
+  # store the parameters used to generate the data
   true_params_list <- list(
     mu = mu, phi = phi_mat,
     margin1_dist = condition$dgp_margin1_dist, margin1_params = margin1_params_list,
@@ -127,6 +131,7 @@ simulate_one_replication_var1 <- function(condition, rep_i, output_dir) {
     copula_param_value = condition$dgp_copula_info[[1]]$value, copula_tau = condition$dgp_tau
   )
 
+  # data for one replication
   output_list <- list(
     condition_id = cond_id, rep_i = rep_i, N = 1, T = T_final, data = sim_data_df,
     true_params = true_params_list,
@@ -158,6 +163,7 @@ simulate_all_conditions_var1 <- function(sim_conditions_df, output_dir) {
   cat(sprintf("Starting simulation: %d conditions, %d reps each...\n", total_conditions, sim_conditions_df$n_reps[1]))
   flush.console()
 
+  # iterate over simulation conditions
   for (i in 1:total_conditions) {
     condition <- sim_conditions_df[i, ]
     cond_id <- condition$condition_id
