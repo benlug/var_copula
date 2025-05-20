@@ -1,13 +1,11 @@
 // file: model_NC_sl.stan
-// Bivariate VAR(1) model assuming Normal margins and Clayton copula.
-// Single-level (no random effects).
+// bivariate VAR(1) model assuming normal margins and Clayton copula
+// Single-level (no random effects)
 
 functions {
-  // Clayton copula log-density for 2 dimensions
-  // theta > 0
   real clayton_copula_density_2d(real u, real v, real theta) {
     real log_lik = 0;
-    real eps = 1e-9; // Epsilon for clamping
+    real eps = 1e-9; // epsilon for clamping
 
     // Clamp inputs
     real u_clamp = fmax(eps, fmin(1.0 - eps, u));
@@ -23,7 +21,7 @@ functions {
 
     real sum_pow = u_pow_neg_theta + v_pow_neg_theta - 1.0;
 
-    // Check if sum_pow is positive, otherwise density is 0 (log = -inf)
+    // check if sum_pow is positive, otherwise density is 0 (log = -inf)
     if (sum_pow <= eps) return negative_infinity();
 
     log_lik += log1p(theta); // log(1 + theta)
@@ -35,19 +33,18 @@ functions {
 }
 
 data {
-  int<lower=2> T;       // Number of time points
-  vector[2] y[T];       // Data: array of 2-element vectors y_t
+  int<lower=2> T;       // number of time points
+  vector[2] y[T];       // data: array of 2-element vectors y_t
 }
 
 parameters {
-  // Global Parameters Only
   vector[2] mu;                // Intercepts
   real<lower=-1, upper=1> phi11; // VAR param
   real<lower=-1, upper=1> phi12; // VAR param
   real<lower=-1, upper=1> phi21; // VAR param
   real<lower=-1, upper=1> phi22; // VAR param
 
-  // Residual Distribution Parameters (Normal)
+  // residual distribution parameters (Normal)
   vector<lower=0>[2] sigma;      // Residual SDs (sigma1, sigma2)
 
   // Copula Parameter (Clayton)

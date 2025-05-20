@@ -50,15 +50,15 @@ setwd(BASE_DIR)
 
 factor_levels <- list(
   dgp_copula = c("gaussian", "clayton"),
-  dgp_alpha1 = c(-8.0),
-  dgp_alpha2 = c(8.0),
-  dgp_tau = c(0.2, 0.4),
-  T_levels = c(100),
-  phi11 = c(0.4),
-  phi22 = c(0.4),
-  phi12 = c(0.2),
-  phi21 = c(0.2),
-  replications = 60
+  dgp_alpha1 = c(-9.0),
+  dgp_alpha2 = c(9.0),
+  dgp_tau = c(0.3, 0.6),
+  T_levels = c(30, 100),
+  phi11 = c(0.5),
+  phi22 = c(0.5),
+  phi12 = c(0.3),
+  phi21 = c(0.3),
+  replications = 40
 )
 
 
@@ -72,7 +72,7 @@ fixed_params <- list(
 # --- Pipeline Control Flags ---
 run_simulation <- TRUE
 run_checks <- TRUE
-run_fitting <- TRUE
+run_fitting <- FALSE
 run_processing <- FALSE # Assumes process_fits.R is updated for separate alphas
 # run_evaluation <- FALSE # Requires updated Quarto/R script
 # run_convergence <- FALSE # Requires updated Quarto/R script
@@ -234,7 +234,7 @@ if (run_fitting) {
       fits_dir = FITS_DIR,
       stan_models_dir = BASE_DIR, # Assumes .stan files are in BASE_DIR
       sim_conditions_file = conditions_file,
-      num_cores = parallel::detectCores() - 1 # Optional parallel
+      num_cores = parallel::detectCores() - 6 # Optional parallel
     )
     cat("--- Model Fitting Finished ---\n")
   }
