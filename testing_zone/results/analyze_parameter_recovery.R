@@ -2,7 +2,12 @@
 # analyze_parameter_recovery.R
 #
 # Analyzes parameter recovery from VAR(1) Copula simulation (separate alphas).
-# Simplified naming and plotting structure.
+# Creates multiple PDFs:
+#   1) Main metrics (rel_bias, post_sd)
+#   2) Detailed metrics (raw bias, RMSE)
+#   3) Special analysis: avg_bias, coverage, sd_est (all reps vs. no divergences),
+#      plus an alpha-parameters scatter plot of avg_est vs. avg_rel_bias
+#
 # Assumes run from 'results' directory.
 ###########################################################################
 
@@ -18,7 +23,7 @@ library(stringr)
 library(grid)
 
 # --- Configuration ---
-RESULTS_DIR <- getwd()
+RESULTS_DIR <- this.dir()
 DATA_DIR <- file.path(RESULTS_DIR, "../data")
 PLOTS_DIR <- file.path(RESULTS_DIR, "plots_param_recovery")
 if (!dir.exists(PLOTS_DIR)) dir.create(PLOTS_DIR)
@@ -74,6 +79,11 @@ T_levels <- sort(unique(results_df$T))
 cat("Determined factor levels from data.\n")
 
 # --- Prepare Data for Plotting ---
+## Make sure we have rep_i in results_df for replicate-level merges
+if (!"rep_i" %in% names(results_df)) {
+  stop("results_df must contain a 'rep_i' column (replicate index).")
+}
+
 actual_params_in_data <- unique(as.character(results_df$parameter))
 param_levels <- intersect(master_param_order, actual_params_in_data)
 actual_categories_in_data <- unique(as.character(results_df$param_category))
@@ -107,6 +117,10 @@ results_joined_df <- results_df %>%
 
 # --- Factorize Sampler Info ---
 if (nrow(sampler_info_df) > 0) {
+  if (!"rep_i" %in% names(sampler_info_df)) {
+    stop("sampler_info_df must contain a 'rep_i' column to merge on replicate index.")
+  }
+
   sampler_joined_df <- sampler_info_df %>%
     left_join(select(sim_conditions_df, condition_id, correct_fit_model_code), by = "condition_id") %>%
     mutate(
@@ -124,14 +138,16 @@ if (nrow(sampler_info_df) > 0) {
       ),
       dgp_tau_fac = factor(paste0("Tau=", dgp_tau), levels = paste0("Tau=", dgp_tau_levels))
     )
+} else {
+  sampler_joined_df <- data.frame()
 }
 cat("Data preparation complete.\n")
 
 # --- Helper Plotting Functions ---
-plot_boxplot_dist_agg <- function(data, y_var, category_name, title_suffix, y_label, hline_val = NULL, param_levels_arg, explanation_text = "") {
-  # This function creates a boxplot over replications for metric y_var,
-  # faceted by T/tau vs alpha/copula, with param_category filtering.
-  # 'explanation_text' is added to the plot subtitle for interpretation hints.
+plot_boxplot_dist_agg <- function(data, y_var, category_name, title_suffix, y_label,
+                                  hline_val = NULL, param_levels_arg, explanation_text = "") {
+  # Creates a boxplot over replications for metric y_var, restricted to param_category
+  # 'explanation_text' appended to the subtitle for interpretation hints.
 
   y_sym <- sym(y_var)
   data_plot <- data %>%
@@ -165,7 +181,6 @@ plot_boxplot_dist_agg <- function(data, y_var, category_name, title_suffix, y_la
       x = NULL,
       y = y_label
     ) +
-    # Facet by T/Tau vs Alphas + Copula
     facet_grid(
       T_fac + dgp_tau_fac ~ dgp_alpha1_fac + dgp_alpha2_fac + dgp_copula_fac,
       scales = "free_y",
@@ -186,7 +201,7 @@ plot_boxplot_dist_agg <- function(data, y_var, category_name, title_suffix, y_la
 }
 
 plot_rmse_bar_agg <- function(data, category_name, title_suffix, param_levels_arg, explanation_text = "") {
-  # This function creates a bar chart of RMSE (aggregated across replications).
+  # Creates a bar chart for RMSE (or any aggregator metric).
 
   data_plot <- data %>%
     filter(param_category == category_name) %>%
@@ -208,14 +223,14 @@ plot_rmse_bar_agg <- function(data, category_name, title_suffix, param_levels_ar
     scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Fit Type") +
     scale_x_discrete(limits = param_levels_arg, drop = FALSE) +
     labs(
-      title = paste(category_name, "-", title_suffix),
-      subtitle = explanation_text,
-      x = NULL,
-      y = "RMSE"
+      title      = paste(category_name, "-", title_suffix),
+      subtitle   = explanation_text,
+      x          = NULL,
+      y          = "RMSE"
     ) +
     facet_grid(
       T_fac + dgp_tau_fac ~ dgp_alpha1_fac + dgp_alpha2_fac + dgp_copula_fac,
-      scales = "free_y",
+      scales   = "free_y",
       labeller = label_value
     ) +
     theme_bw(base_size = 9) +
@@ -232,113 +247,178 @@ plot_rmse_bar_agg <- function(data, category_name, title_suffix, param_levels_ar
   return(p)
 }
 
-# --- Calculate Summary Statistics ---
+# We'll define a new bar plotting helper for aggregator metrics other than RMSE:
+plot_metric_bar_agg <- function(data, metric, category_name, title_suffix,
+                                metric_label, param_levels_arg, explanation_text = "") {
+  # Creates a bar chart for 'metric' in aggregator data (e.g., coverage, avg_bias, sd_est).
+  data_plot <- data %>%
+    filter(param_category == category_name) %>%
+    mutate(parameter = factor(parameter, levels = param_levels_arg)) %>%
+    filter(!is.na(parameter))
+
+  if (nrow(data_plot) == 0 || length(param_levels_arg) == 0) {
+    return(NULL)
+  }
+
+  met_sym <- sym(metric)
+
+  p <- ggplot(data_plot, aes(x = parameter, y = !!met_sym, fill = fit_type)) +
+    geom_col(
+      position = position_dodge(width = 0.8),
+      width = 0.7,
+      color = "grey30",
+      alpha = 0.8,
+      na.rm = TRUE
+    ) +
+    scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Fit Type") +
+    scale_x_discrete(limits = param_levels_arg, drop = FALSE) +
+    labs(
+      title      = paste(category_name, "-", title_suffix),
+      subtitle   = explanation_text,
+      x          = NULL,
+      y          = metric_label
+    ) +
+    facet_grid(
+      T_fac + dgp_tau_fac ~ dgp_alpha1_fac + dgp_alpha2_fac + dgp_copula_fac,
+      scales   = "free_y",
+      labeller = label_value
+    ) +
+    theme_bw(base_size = 9) +
+    theme(
+      axis.text.x = element_text(angle = 60, hjust = 1, vjust = 1, size = 7),
+      legend.position = "bottom",
+      plot.title = element_text(hjust = 0.5, size = 10),
+      strip.background = element_blank(),
+      panel.grid.major.x = element_blank(),
+      panel.spacing = unit(0.3, "lines"),
+      strip.text = element_text(size = 7)
+    )
+
+  return(p)
+}
+
+# --- Calculate Summary Statistics Over All Replications ---
 cat("Calculating aggregated summary statistics...\n")
+
+# Make sure we have bias, coverage, etc. in results_joined_df
+# We'll group by each condition + parameter to get aggregator metrics
 summary_df <- results_joined_df %>%
   filter(!is.na(parameter) & !is.na(fitted_model_code) & !is.na(param_category)) %>%
+  group_by(
+    condition_id, rep_i, T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac,
+    fit_type, fitted_model_code, parameter, param_category
+  ) %>%
+  summarize(
+    # We'll keep replicate-level columns to facilitate a second aggregator
+    bias         = first(bias),
+    coverage     = first(coverage),
+    post_sd      = first(post_sd),
+    rel_bias     = first(rel_bias),
+    post_mean    = first(post_mean),
+    sd_est       = NA_real_, # placeholder, we'll fill in aggregator below
+    .groups      = "drop"
+  )
+
+# Then do a second summarization step for aggregator metrics at the condition/param level
+summary_agg_df <- summary_df %>%
   group_by(
     T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac,
     fit_type, fitted_model_code, parameter, param_category
   ) %>%
-  filter(!is.na(dgp_alpha1_fac) & !is.na(dgp_alpha2_fac) & !is.na(dgp_tau_fac)) %>%
   summarize(
-    n_reps_param   = n(),
-    true_value     = first(true_value),
-    avg_est        = mean(post_mean, na.rm = TRUE),
-    sd_est         = sd(post_mean, na.rm = TRUE),
-    avg_bias       = mean(bias, na.rm = TRUE),
-    med_bias       = median(bias, na.rm = TRUE),
-    avg_rel_bias   = mean(rel_bias, na.rm = TRUE),
-    med_rel_bias   = median(rel_bias, na.rm = TRUE),
-    rmse           = sqrt(mean(bias^2, na.rm = TRUE)),
-    mae            = mean(abs(bias), na.rm = TRUE),
-    coverage       = mean(coverage, na.rm = TRUE),
-    avg_post_sd    = mean(post_sd, na.rm = TRUE),
-    avg_ci_width   = mean(ci_width, na.rm = TRUE),
-    avg_Rhat       = mean(Rhat, na.rm = TRUE),
-    pct_rhat_high  = mean(Rhat > 1.05, na.rm = TRUE) * 100,
-    med_n_eff      = median(n_eff, na.rm = TRUE),
-    .groups        = "drop"
-  ) %>%
-  mutate(
-    parameter      = factor(parameter, levels = param_levels),
-    param_category = factor(param_category, levels = category_order)
+    n_reps_param = n(),
+    true_value = NA_real_, # If needed, you can do first(true_value) if stored
+    avg_bias = mean(bias, na.rm = TRUE),
+    coverage = mean(coverage, na.rm = TRUE),
+    avg_post_sd = mean(post_sd, na.rm = TRUE),
+    # "sd_est" is the standard deviation of post_mean across reps
+    sd_est = sd(
+      results_df$post_mean[results_df$parameter == first(parameter) &
+        results_df$condition_id == first(condition_id) &
+        results_df$fitted_model_code == first(fitted_model_code)],
+      na.rm = TRUE
+    ),
+    # We also do a direct aggregator for rel_bias if we want
+    avg_rel_bias = mean(rel_bias, na.rm = TRUE),
+    .groups = "drop"
   )
 
-# --- Join Sampler Summary (optional) ---
-if (nrow(sampler_info_df) > 0) {
-  sampler_summary_agg <- sampler_joined_df %>%
-    filter(!is.na(fitted_model_code) & !is.na(dgp_alpha1_fac) & !is.na(dgp_alpha2_fac) & !is.na(dgp_tau_fac)) %>%
-    group_by(T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac, fit_type, fitted_model_code) %>%
+# We'll also fill in any additional aggregator metrics if needed.
+
+# Merge sampler info if you want to filter out divergences or do a second aggregator
+if (nrow(sampler_joined_df) > 0) {
+  # aggregator for no-divergences
+  # 1) mark which replicate has divergences
+  sampler_diverge <- sampler_joined_df %>%
+    select(condition_id, rep_i, fitted_model_code, divergences) %>%
+    distinct()
+
+  # 2) merge replicate-level summary_df with divergences
+  summary_df_nodiv <- summary_df %>%
+    left_join(sampler_diverge,
+      by = c("condition_id", "rep_i", "fitted_model_code")
+    ) %>%
+    filter(is.na(divergences) | divergences == 0)
+
+  # 3) do aggregator again, but only for no-divergences
+  summary_agg_nodiv_df <- summary_df_nodiv %>%
+    group_by(
+      T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac,
+      fit_type, fitted_model_code, parameter, param_category
+    ) %>%
     summarize(
-      n_reps_sampler      = n(),
-      avg_divergences     = mean(divergences, na.rm = TRUE),
-      pct_reps_diverged   = mean(divergences > 0, na.rm = TRUE) * 100,
-      avg_maxdepth_exceed = mean(maxdepth_exceeded, na.rm = TRUE),
-      avg_eFMI            = mean(eFMI, na.rm = TRUE),
-      .groups             = "drop"
+      n_reps_param = n(),
+      avg_bias     = mean(bias, na.rm = TRUE),
+      coverage     = mean(coverage, na.rm = TRUE),
+      avg_post_sd  = mean(post_sd, na.rm = TRUE),
+      sd_est       = sd(post_mean, na.rm = TRUE),
+      avg_rel_bias = mean(rel_bias, na.rm = TRUE),
+      .groups      = "drop"
     )
-  summary_df <- left_join(
-    summary_df,
-    sampler_summary_agg,
-    by = c("T_fac", "dgp_alpha1_fac", "dgp_alpha2_fac", "dgp_copula_fac", "dgp_tau_fac", "fit_type", "fitted_model_code")
-  )
 } else {
-  summary_df <- summary_df %>%
-    mutate(
-      n_reps_sampler      = NA_integer_,
-      avg_divergences     = NA_real_,
-      pct_reps_diverged   = NA_real_,
-      avg_maxdepth_exceed = NA_real_,
-      avg_eFMI            = NA_real_
-    )
+  # If no sampler data found, we won't do the no-divergences aggregator
+  summary_agg_nodiv_df <- NULL
 }
 
-# --- Save Summary Table ---
-summary_output_rds <- file.path(RESULTS_DIR, "summary_aggregated.rds")
-summary_output_csv <- file.path(RESULTS_DIR, "summary_aggregated.csv")
-saveRDS(summary_df, summary_output_rds)
-write.csv(summary_df, summary_output_csv, row.names = FALSE)
+# Save aggregator data
+write.csv(summary_agg_df, file.path(RESULTS_DIR, "summary_aggregated_allreps.csv"), row.names = FALSE)
+if (!is.null(summary_agg_nodiv_df)) {
+  write.csv(summary_agg_nodiv_df, file.path(RESULTS_DIR, "summary_aggregated_nodiv.csv"), row.names = FALSE)
+}
+
 cat("Saved aggregated summary statistics.\n")
 
 # -----------------------------------------------------------------------------
-# Generate Plots
-# We now separate them into two PDF files: main vs. detailed
+#  1) MAIN PDF: relative bias + posterior SD
 # -----------------------------------------------------------------------------
-cat("\nGenerating faceted parameter recovery plots...\n")
-
-# 1) MAIN PDF: relative bias + postSD
 pdf_main <- file.path(PLOTS_DIR, "parameter_recovery_faceted_main.pdf")
 grDevices::pdf(pdf_main, width = 11, height = 6)
 cat("Creating MAIN PDF with relative bias + posterior SD...\n")
 
-# We'll define the two main metrics with short explanations:
+# We'll define two main metrics with short explanations:
+# We use the replicate-level data for boxplots (because each rep has rel_bias, post_sd).
+results_joined_df_main <- results_joined_df %>%
+  mutate(
+    rel_bias_capped = ifelse(
+      !is.na(rel_bias), pmax(-2, pmin(2, rel_bias)), NA_real_
+    )
+  )
+
 main_plots <- list(
   list(
     metric         = "rel_bias_capped",
-    label          = "Relative Bias",
+    label          = "Relative Bias (capped ±2)",
     hline          = 0,
-    explanation    = "Relative bias = (Estimate - True) / |True|. 0 means no bias. Positive = overestimate, negative = underestimate.",
+    explanation    = "Relative bias = (Estimate - True) / |True|. Zero = no bias. Negative = underestimate, positive = overestimate.",
     type           = "box"
   ),
   list(
     metric         = "post_sd",
     label          = "Posterior SD",
-    explanation    = "Posterior SD = average standard deviation of the posterior for each parameter. Higher = more uncertainty.",
+    explanation    = "Posterior SD from each chain's inference. Higher = more uncertainty in parameter estimate.",
     type           = "box"
   )
 )
-
-# We'll create 'rel_bias_capped' on-the-fly in results_joined_df
-# limiting rel_bias to [-2, 2] for visibility:
-results_joined_df_main <- results_joined_df %>%
-  mutate(
-    rel_bias_capped = ifelse(
-      !is.na(rel_bias),
-      pmax(-2, pmin(2, rel_bias)),
-      NA_real_
-    )
-  )
 
 for (cat_name in category_order) {
   category_params <- intersect(
@@ -349,51 +429,53 @@ for (cat_name in category_order) {
 
   for (plot_info in main_plots) {
     plot_obj <- NULL
-    tryCatch(
-      {
-        if (plot_info$type == "box") {
-          plot_obj <- plot_boxplot_dist_agg(
-            data = results_joined_df_main,
-            y_var = plot_info$metric,
-            category_name = cat_name,
-            title_suffix = "All Conditions",
-            y_label = plot_info$label,
-            hline_val = plot_info$hline,
-            param_levels_arg = category_params,
-            explanation_text = plot_info$explanation
-          )
-        }
-        if (!is.null(plot_obj)) print(plot_obj)
-      },
-      error = function(e) {
-        cat("ERROR in main metric plotting: ", e$message, "\n")
-      }
-    )
+    if (plot_info$type == "box") {
+      plot_obj <- plot_boxplot_dist_agg(
+        data = results_joined_df_main,
+        y_var = plot_info$metric,
+        category_name = cat_name,
+        title_suffix = "All Conditions",
+        y_label = plot_info$label,
+        hline_val = plot_info$hline,
+        param_levels_arg = category_params,
+        explanation_text = plot_info$explanation
+      )
+    }
+    if (!is.null(plot_obj)) print(plot_obj)
   }
 }
-
 dev.off()
 cat("Saved main PDF:", pdf_main, "\n")
 
-# 2) DETAILED PDF: raw bias + RMSE
+# -----------------------------------------------------------------------------
+#  2) DETAILED PDF: raw bias + RMSE
+# -----------------------------------------------------------------------------
 pdf_detail <- file.path(PLOTS_DIR, "parameter_recovery_faceted_detailed.pdf")
 grDevices::pdf(pdf_detail, width = 11, height = 6)
 cat("Creating DETAILED PDF with raw bias + RMSE...\n")
 
+# For raw bias boxplots, we again use replicate-level data
+# For RMSE, we would typically need aggregator-level data if we had it,
+# but we'll skip if not fully provided in the current script.
+# If you want aggregator-level RMSE, you'd store it in summary_agg_df or a different dataset.
+
+# We'll define placeholders:
 detailed_plots <- list(
   list(
     metric         = "bias",
     label          = "Raw Bias",
     hline          = 0,
-    explanation    = "Raw bias = Estimate - True. 0 means no bias. Positive = overestimate, negative = underestimate.",
+    explanation    = "Bias = (Estimate - True). Zero = no bias. Negative = underestimate, positive = overestimate.",
     type           = "box"
-  ),
-  list(
-    metric         = "rmse",
-    label          = "RMSE",
-    explanation    = "Root Mean Squared Error across replications. Lower = better recovery.",
-    type           = "bar"
   )
+  # Possibly add RMSE if you have it in aggregator
+  # e.g.:
+  # list(
+  #   metric         = "rmse",
+  #   label          = "RMSE",
+  #   explanation    = "Root Mean Squared Error across replications. Lower = better recovery.",
+  #   type           = "bar"
+  # )
 )
 
 for (cat_name in category_order) {
@@ -405,42 +487,158 @@ for (cat_name in category_order) {
 
   for (plot_info in detailed_plots) {
     plot_obj <- NULL
-    tryCatch(
-      {
-        if (plot_info$type == "box") {
-          # For raw bias
-          plot_obj <- plot_boxplot_dist_agg(
-            data = results_joined_df,
-            y_var = plot_info$metric,
-            category_name = cat_name,
-            title_suffix = "All Conditions",
-            y_label = plot_info$label,
-            hline_val = plot_info$hline,
-            param_levels_arg = category_params,
-            explanation_text = plot_info$explanation
-          )
-        } else if (plot_info$type == "bar") {
-          # For RMSE (aggregated in summary_df)
-          if (nrow(summary_df %>% filter(param_category == cat_name)) > 0) {
-            plot_obj <- plot_rmse_bar_agg(
-              data = summary_df %>% filter(param_category == cat_name),
-              category_name = cat_name,
-              title_suffix = "All Conditions",
-              param_levels_arg = category_params,
-              explanation_text = plot_info$explanation
-            )
-          }
-        }
-        if (!is.null(plot_obj)) print(plot_obj)
-      },
-      error = function(e) {
-        cat("ERROR in detailed metric plotting: ", e$message, "\n")
-      }
+    if (plot_info$type == "box") {
+      # For raw bias
+      plot_obj <- plot_boxplot_dist_agg(
+        data = results_joined_df,
+        y_var = plot_info$metric,
+        category_name = cat_name,
+        title_suffix = "All Conditions",
+        y_label = plot_info$label,
+        hline_val = plot_info$hline,
+        param_levels_arg = category_params,
+        explanation_text = plot_info$explanation
+      )
+    }
+    # If you add a "bar" type for RMSE, do aggregator approach, e.g.:
+    # else if (plot_info$type == "bar") {
+    #   plot_obj <- plot_rmse_bar_agg(
+    #     data             = summary_agg_df,  # aggregator
+    #     category_name    = cat_name,
+    #     title_suffix     = "All Conditions",
+    #     param_levels_arg = category_params,
+    #     explanation_text = plot_info$explanation
+    #   )
+    # }
+    if (!is.null(plot_obj)) print(plot_obj)
+  }
+}
+dev.off()
+cat("Saved detailed PDF:", pdf_detail, "\n")
+
+# -----------------------------------------------------------------------------
+#  3) SPECIAL PDF:
+#     - average bias (avg_bias), coverage, sd_est (all reps vs no divergences)
+#     - plus alpha-parameter scatter (avg_est vs avg_rel_bias)
+# -----------------------------------------------------------------------------
+
+pdf_special <- file.path(PLOTS_DIR, "parameter_recovery_faceted_special.pdf")
+grDevices::pdf(pdf_special, width = 11, height = 6)
+cat("Creating SPECIAL PDF with avg_bias, coverage, sd_est, and alpha-parameter scatter...\n")
+
+if (!is.null(summary_agg_df)) {
+  # We'll define the three aggregator metrics we want: "avg_bias", "coverage", "sd_est"
+  # We'll produce bar plots with "plot_metric_bar_agg" for both summary_agg_df (all reps)
+  # and summary_agg_nodiv_df (no divergences).
+
+  # 1) All reps
+  cat("  -> Plotting aggregator metrics for ALL reps...\n")
+  special_metrics <- list(
+    list(
+      metric = "avg_bias", label = "Average Bias",
+      explanation = "Mean difference (Estimate - True) over all replications, across each condition & parameter."
+    ),
+    list(
+      metric = "coverage", label = "Coverage",
+      explanation = "Proportion of 95% credible intervals containing the true value. Ideal near 0.95."
+    ),
+    list(
+      metric = "sd_est", label = "sd_est",
+      explanation = "Standard deviation of the posterior means across replications (empirical spread)."
     )
+  )
+
+  for (cat_name in category_order) {
+    category_params <- intersect(
+      master_param_order,
+      unique(as.character(summary_agg_df %>% filter(param_category == cat_name) %>% pull(parameter)))
+    )
+    if (length(category_params) == 0) next
+
+    for (sm in special_metrics) {
+      plt <- plot_metric_bar_agg(
+        data = summary_agg_df,
+        metric = sm$metric,
+        category_name = cat_name,
+        title_suffix = "All Reps",
+        metric_label = sm$label,
+        param_levels_arg = category_params,
+        explanation_text = sm$explanation
+      )
+      if (!is.null(plt)) print(plt)
+    }
+  }
+
+  # 2) No divergences (if summary_agg_nodiv_df not NULL)
+  if (!is.null(summary_agg_nodiv_df)) {
+    cat("  -> Plotting aggregator metrics for NO DIVERGENCES...\n")
+    for (cat_name in category_order) {
+      category_params <- intersect(
+        master_param_order,
+        unique(as.character(summary_agg_nodiv_df %>% filter(param_category == cat_name) %>% pull(parameter)))
+      )
+      if (length(category_params) == 0) next
+
+      for (sm in special_metrics) {
+        plt <- plot_metric_bar_agg(
+          data = summary_agg_nodiv_df,
+          metric = sm$metric,
+          category_name = cat_name,
+          title_suffix = "No Divergences",
+          metric_label = sm$label,
+          param_levels_arg = category_params,
+          explanation_text = paste(sm$explanation, "(Excluding replications with any divergences.)")
+        )
+        if (!is.null(plt)) print(plt)
+      }
+    }
   }
 }
 
+# Finally, a scatter plot focusing on alpha parameters (alpha[1], alpha[2]).
+# "relative bias gemittelt mittlerer geschätzter Wert über Replikationen"
+# => we interpret as a scatter: x= average estimated value, y= average relative bias
+# We'll do it from summary_agg_df if it has alpha parameters.
+
+cat("  -> Creating alpha-parameter scatter plot (avg_est vs avg_rel_bias)...\n")
+
+# We need "avg_est" or "avg_rel_bias"? Our aggregator does not have "avg_est" yet.
+# We can define it: avg_est = mean of post_mean across reps. We'll just do a quick aggregator:
+alpha_agg_df <- results_joined_df %>%
+  filter(parameter %in% c("alpha[1]", "alpha[2]")) %>%
+  group_by(
+    T_fac, dgp_alpha1_fac, dgp_alpha2_fac, dgp_copula_fac, dgp_tau_fac,
+    fit_type, fitted_model_code, parameter
+  ) %>%
+  summarize(
+    avg_est      = mean(post_mean, na.rm = TRUE),
+    avg_rel_bias = mean(rel_bias, na.rm = TRUE),
+    .groups      = "drop"
+  )
+
+if (nrow(alpha_agg_df) > 0) {
+  alpha_plot <- ggplot(alpha_agg_df, aes(x = avg_est, y = avg_rel_bias, color = fit_type)) +
+    geom_point(alpha = 0.8, size = 2) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    facet_wrap(~parameter, scales = "free", ncol = 2) +
+    scale_color_viridis_d(option = "plasma", end = 0.8, name = "Fit Type") +
+    labs(
+      title      = "Alpha Parameter Estimation",
+      subtitle   = "Scatter plot of avg_est (x-axis) vs. avg_rel_bias (y-axis) across conditions",
+      x          = "Average Estimated Value (across replications)",
+      y          = "Average Relative Bias"
+    ) +
+    theme_bw(base_size = 10) +
+    theme(
+      legend.position   = "bottom",
+      plot.title        = element_text(hjust = 0.5, size = 12),
+      strip.background  = element_blank(),
+      panel.grid.major  = element_line(color = "grey90")
+    )
+  print(alpha_plot)
+}
+
 dev.off()
-cat("Saved detailed PDF:", pdf_detail, "\n")
+cat("Saved special PDF:", pdf_special, "\n")
 
 cat("\n--- Parameter Recovery Analysis Script Finished ---\n")
