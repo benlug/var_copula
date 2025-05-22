@@ -2,10 +2,11 @@
 # Identify which simulation replications failed (missing data or fit files)
 
 suppressPackageStartupMessages(library(dplyr))
+library(this.path)
 
 args <- commandArgs(trailingOnly = TRUE)
 # Use optional base directory argument; default current working directory
-base_dir <- if (length(args) >= 1) args[1] else getwd()
+base_dir <- this.dir()
 
 # Paths follow the directory layout from run_pipeline.R
 DATA_DIR <- file.path(base_dir, "../data")
