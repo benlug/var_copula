@@ -20,6 +20,8 @@ if (nrow(failed_df) == 0) {
 }
 
 inspect_failed_fit <- function(row) {
+  # `row` is expected to be a named list with the elements from
+  # `failed_fit_report.csv` for a single failed fit.
   fp <- file.path(FITS_DIR, row$file)
   info <- file.info(fp)
   exists <- !is.na(info$size)
@@ -29,7 +31,7 @@ inspect_failed_fit <- function(row) {
     tryCatch({
       readRDS(fp)
     }, error = function(e) {
-      read_err <<- e$message
+      read_err <- e$message
     })
   }
   tibble(
@@ -41,5 +43,20 @@ inspect_failed_fit <- function(row) {
   )
 }
 
-results <- bind_rows(purrr::pmap_dfr(failed_df, inspect_failed_fit))
+# `purrr::pmap_dfr` iterates over the rows of the data frame, passing
+# each column value as a separate argument.  We wrap those values into a
+# list so that `inspect_failed_fit()` receives a single `row` argument.
+results <- purrr::pmap_dfr(
+  failed_df,
+  function(file, condition_id, rep_i, reason, file_size) {
+    inspect_failed_fit(list(
+      file = file,
+      condition_id = condition_id,
+      rep_i = rep_i,
+      reason = reason,
+      file_size = file_size
+    ))
+  }
+)
+
 print(results)
