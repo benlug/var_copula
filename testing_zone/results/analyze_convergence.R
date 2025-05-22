@@ -51,9 +51,6 @@ diagnostic_colors <- list(
 # ===========================================================================
 
 #' Read Stan fit safely with error handling
-#'
-#' This function protects us from corrupted files or reading errors
-#' that could crash our entire analysis pipeline.
 safe_read_stanfit <- function(filename) {
   if (!file.exists(filename)) {
     return(NULL)
@@ -68,54 +65,46 @@ safe_read_stanfit <- function(filename) {
 }
 
 #' Calculate Energy Fraction of Missing Information (E-FMI)
-#'
-#' E-FMI tells us how well the momentum resampling in HMC is working.
-#' Think of it as measuring how efficiently our sampler is exploring
-#' the parameter space. Low values suggest the sampler is struggling.
 calc_e_fmi <- function(energy_vec) {
   n <- length(energy_vec)
   if (n < 3 || any(!is.finite(energy_vec))) {
     return(NA_real_)
   }
 
-  # Calculate variance of energy
   E_mean <- mean(energy_vec)
   var_E <- var(energy_vec)
 
   # Calculate lag-1 autocorrelation of energy
-  lag1_sum <- sum((energy_vec[-1] - E_mean) * (energy_vec[-n] - E_mean))
+  lag1_sum <- sum((energy_vec[-1] - E_mean) * (energy_vec[-length(energy_vec)] - E_mean))
   lag1_cov <- lag1_sum / (n - 1)
 
-  # E-FMI formula: Var(E) / (Var(E) + 2*Cov(E_t, E_{t-1}))
+  # E-FMI formula
   denom <- var_E + 2 * lag1_cov
   if (is.na(denom) || denom <= 1e-9) {
     return(NA_real_)
   }
 
   efmi_val <- var_E / denom
-  return(pmax(0, pmin(1.5, efmi_val))) # Clamp to reasonable range
+  return(pmax(0, pmin(1.5, efmi_val))) # clamp
 }
 
-#' Create diagnostic status indicator
-#'
-#' This helper function creates a colored text indicator showing
-#' whether a diagnostic value is good, warning, or bad.
+#' Create diagnostic status indicator for a single value
 diagnostic_status <- function(value, type = "divergences", is_percentage = FALSE) {
+  if (length(value) != 1) {
+    stop("`diagnostic_status()` is not vectorized. Pass a single numeric value.")
+  }
   if (is.na(value)) {
     return("N/A")
   }
 
-  # Define thresholds for each diagnostic type
   thresholds <- switch(type,
     "divergences" = list(good = 0, warning = 1, bad = 10),
     "efmi" = list(good = 0.3, warning = 0.2, bad = 0.1),
     "rhat" = list(good = 1.01, warning = 1.05, bad = 1.1),
-    "neff_ratio" = list(good = 0.1, warning = 0.05, bad = 0.01),
     "accept_stat" = list(good = 0.9, warning = 0.8, bad = 0.7),
     list(good = NA, warning = NA, bad = NA)
   )
 
-  # Format the value
   formatted_value <- if (is_percentage) {
     sprintf("%.1f%%", value)
   } else if (type == "divergences") {
@@ -124,30 +113,23 @@ diagnostic_status <- function(value, type = "divergences", is_percentage = FALSE
     sprintf("%.3f", value)
   }
 
-  # Determine status and color
+  # For divergences & rhat: lower is better
   if (type %in% c("divergences", "rhat")) {
-    # For these, lower is better
     if (value <= thresholds$good) {
       status <- "GOOD"
-      color <- diagnostic_colors$good
     } else if (value <= thresholds$warning) {
       status <- "WARNING"
-      color <- diagnostic_colors$warning
     } else {
       status <- "BAD"
-      color <- diagnostic_colors$bad
     }
   } else {
-    # For these, higher is better
+    # For efmi, accept_stat: higher is better
     if (value >= thresholds$good) {
       status <- "GOOD"
-      color <- diagnostic_colors$good
     } else if (value >= thresholds$warning) {
       status <- "WARNING"
-      color <- diagnostic_colors$warning
     } else {
       status <- "BAD"
-      color <- diagnostic_colors$bad
     }
   }
 
@@ -155,11 +137,7 @@ diagnostic_status <- function(value, type = "divergences", is_percentage = FALSE
 }
 
 #' Create a summary table for a single condition
-#'
-#' This function creates a nicely formatted table summarizing all
-#' convergence diagnostics for a given condition.
 create_condition_summary_table <- function(condition_data, sampler_data) {
-  # Calculate key metrics for each model type fitted
   summary_by_model <- sampler_data %>%
     group_by(fitted_model_code, fit_type) %>%
     summarise(
@@ -180,7 +158,7 @@ create_condition_summary_table <- function(condition_data, sampler_data) {
       .groups = "drop"
     )
 
-  # Add R-hat and N_eff information if available
+  # Add R-hat and N_eff if available
   if (nrow(condition_data) > 0) {
     param_summary <- condition_data %>%
       group_by(fitted_model_code, fit_type) %>%
@@ -192,26 +170,26 @@ create_condition_summary_table <- function(condition_data, sampler_data) {
         min_neff = min(n_eff, na.rm = TRUE),
         .groups = "drop"
       )
-
     summary_by_model <- left_join(summary_by_model, param_summary,
       by = c("fitted_model_code", "fit_type")
     )
   }
 
-  # Create formatted table
   summary_table <- summary_by_model %>%
+    rowwise() %>%
     mutate(
       Model = paste0(fitted_model_code, " (", fit_type, ")"),
-      Divergences = diagnostic_status(avg_divergences, "divergences"),
-      `Max Divergences` = diagnostic_status(max_divergences, "divergences"),
-      `% with Divergences` = diagnostic_status(pct_diverged, "divergences", TRUE),
-      `E-FMI` = diagnostic_status(avg_efmi, "efmi"),
-      `Min E-FMI` = diagnostic_status(min_efmi, "efmi"),
-      `Avg R-hat` = diagnostic_status(avg_rhat, "rhat"),
-      `Max R-hat` = diagnostic_status(max_rhat, "rhat"),
-      `Median N_eff` = sprintf("%.0f", median_neff),
-      `Accept Stat` = diagnostic_status(avg_accept_stat, "accept_stat")
+      Divergences = diagnostic_status(avg_divergences %||% 0, "divergences"),
+      `Max Divergences` = diagnostic_status(max_divergences %||% 0, "divergences"),
+      `% with Divergences` = diagnostic_status(pct_diverged %||% 0, "divergences", is_percentage = TRUE),
+      `E-FMI` = diagnostic_status(avg_efmi %||% 0, "efmi"),
+      `Min E-FMI` = diagnostic_status(min_efmi %||% 0, "efmi"),
+      `Avg R-hat` = diagnostic_status(avg_rhat %||% 0, "rhat"),
+      `Max R-hat` = diagnostic_status(max_rhat %||% 0, "rhat"),
+      `Median N_eff` = if (!is.na(median_neff)) sprintf("%.0f", median_neff) else "N/A",
+      `Accept Stat` = diagnostic_status(avg_accept_stat %||% 0, "accept_stat")
     ) %>%
+    ungroup() %>%
     select(
       Model, Divergences, `% with Divergences`, `E-FMI`, `Min E-FMI`,
       `Avg R-hat`, `Max R-hat`, `Median N_eff`, `Accept Stat`
@@ -221,9 +199,6 @@ create_condition_summary_table <- function(condition_data, sampler_data) {
 }
 
 #' Create parameter-specific diagnostic table
-#'
-#' This breaks down convergence by parameter type, helping us identify
-#' which parameters are causing sampling difficulties.
 create_parameter_diagnostic_table <- function(condition_data) {
   if (nrow(condition_data) == 0) {
     return(data.frame(Parameter = "No data available"))
@@ -239,14 +214,16 @@ create_parameter_diagnostic_table <- function(condition_data) {
       min_neff = min(n_eff, na.rm = TRUE),
       .groups = "drop"
     ) %>%
+    rowwise() %>%
     mutate(
       `Parameter Group` = param_category,
       Model = paste0(fitted_model_code, " (", fit_type, ")"),
-      `Avg R-hat` = diagnostic_status(avg_rhat, "rhat"),
-      `% R-hat > 1.05` = diagnostic_status(pct_high_rhat, "divergences", TRUE),
-      `Median N_eff` = sprintf("%.0f", median_neff),
-      `Min N_eff` = sprintf("%.0f", min_neff)
+      `Avg R-hat` = diagnostic_status(avg_rhat %||% 0, "rhat"),
+      `% R-hat > 1.05` = diagnostic_status(pct_high_rhat %||% 0, "divergences", is_percentage = TRUE),
+      `Median N_eff` = if (!is.na(median_neff)) sprintf("%.0f", median_neff) else "N/A",
+      `Min N_eff` = if (!is.na(min_neff)) sprintf("%.0f", min_neff) else "N/A"
     ) %>%
+    ungroup() %>%
     select(
       `Parameter Group`, Model, `Avg R-hat`, `% R-hat > 1.05`,
       `Median N_eff`, `Min N_eff`
@@ -257,14 +234,9 @@ create_parameter_diagnostic_table <- function(condition_data) {
 }
 
 #' Create diagnostic plots for a condition
-#'
-#' This function generates a comprehensive set of plots to visualize
-#' convergence diagnostics. Each plot tells us something different
-#' about how well our sampler is working.
 create_diagnostic_plots <- function(condition_data, sampler_data, condition_info) {
   plots <- list()
 
-  # Common plot styling
   base_theme <- theme_bw(base_size = 10) +
     theme(
       legend.position = "bottom",
@@ -272,7 +244,7 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
       axis.text = element_text(size = 9)
     )
 
-  # 1. Divergences plot
+  # 1. Divergences
   if (nrow(sampler_data) > 0) {
     p_div <- ggplot(sampler_data, aes(x = fit_type, y = divergences, fill = fitted_model_code)) +
       geom_violin(trim = FALSE, alpha = 0.6, scale = "width") +
@@ -281,10 +253,10 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
         outlier.shape = 21, outlier.alpha = 0.5, alpha = 0.8
       ) +
       scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Model") +
-      scale_y_sqrt(breaks = c(0, 1, 5, 10, 25, 50, 100)) + # Square root scale for better visibility
+      scale_y_sqrt(breaks = c(0, 1, 5, 10, 25, 50, 100)) +
       labs(
         title = "Divergent Transitions by Model Type",
-        subtitle = "Lower is better - ideally zero divergences",
+        subtitle = "Lower is better (ideally zero). Distribution across replications (violin).",
         x = "Model Specification",
         y = "Number of Divergences (sqrt scale)"
       ) +
@@ -292,7 +264,7 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
 
     plots$divergences <- p_div
 
-    # 2. E-FMI plot
+    # 2. E-FMI
     p_efmi <- ggplot(sampler_data, aes(x = fit_type, y = eFMI, fill = fitted_model_code)) +
       geom_violin(trim = FALSE, alpha = 0.6, scale = "width") +
       geom_boxplot(
@@ -301,13 +273,13 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
       ) +
       geom_hline(
         yintercept = 0.3, linetype = "dashed",
-        color = diagnostic_colors$threshold, size = 1
+        color = diagnostic_colors$threshold, linewidth = 1
       ) +
       scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Model") +
       scale_y_continuous(limits = c(0, 1)) +
       labs(
         title = "Energy Fraction of Missing Information (E-FMI)",
-        subtitle = "Should be above 0.3 (blue line) for good sampling",
+        subtitle = "Should be above 0.3 (blue line) for efficient exploration.",
         x = "Model Specification",
         y = "E-FMI"
       ) +
@@ -315,7 +287,7 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
 
     plots$efmi <- p_efmi
 
-    # 3. Acceptance statistic plot
+    # 3. Acceptance stat
     p_accept <- ggplot(sampler_data, aes(x = fit_type, y = avg_accept_stat, fill = fitted_model_code)) +
       geom_violin(trim = FALSE, alpha = 0.6, scale = "width") +
       geom_boxplot(
@@ -324,13 +296,13 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
       ) +
       geom_hline(
         yintercept = 0.99, linetype = "dashed",
-        color = diagnostic_colors$threshold, size = 1
+        color = diagnostic_colors$threshold, linewidth = 1
       ) +
       scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Model") +
       scale_y_continuous(limits = c(0.7, 1)) +
       labs(
         title = "Average Acceptance Statistic",
-        subtitle = "Target is 0.99 (blue line) based on adapt_delta setting",
+        subtitle = "Target near 0.99 (blue line). Higher is generally better.",
         x = "Model Specification",
         y = "Acceptance Probability"
       ) +
@@ -339,9 +311,8 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
     plots$accept_stat <- p_accept
   }
 
-  # 4. R-hat distribution plot
+  # 4. R-hat distribution
   if (nrow(condition_data) > 0) {
-    # Calculate average R-hat per fit
     avg_rhat_data <- condition_data %>%
       group_by(rep_i, fitted_model_code, fit_type) %>%
       summarise(avg_Rhat = mean(Rhat, na.rm = TRUE), .groups = "drop")
@@ -354,13 +325,13 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
       ) +
       geom_hline(
         yintercept = 1.05, linetype = "dashed",
-        color = diagnostic_colors$threshold, size = 1
+        color = diagnostic_colors$threshold, linewidth = 1
       ) +
       scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Model") +
       coord_cartesian(ylim = c(0.99, 1.1)) +
       labs(
         title = "Potential Scale Reduction Factor (R-hat)",
-        subtitle = "Should be below 1.05 (blue line) for all parameters",
+        subtitle = "Should be < 1.05 (blue line). Average R-hat across params per replication.",
         x = "Model Specification",
         y = "Average R-hat"
       ) +
@@ -368,7 +339,7 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
 
     plots$rhat <- p_rhat
 
-    # 5. Effective sample size plot
+    # 5. Effective sample size
     med_neff_data <- condition_data %>%
       group_by(rep_i, fitted_model_code, fit_type) %>%
       summarise(med_n_eff = median(n_eff, na.rm = TRUE), .groups = "drop")
@@ -381,14 +352,14 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
       ) +
       geom_hline(
         yintercept = 400, linetype = "dashed",
-        color = diagnostic_colors$threshold, size = 1
+        color = diagnostic_colors$threshold, linewidth = 1
       ) +
       scale_fill_viridis_d(option = "plasma", end = 0.8, name = "Model") +
       scale_y_log10(limits = c(10, NA), breaks = c(10, 100, 400, 1000, 4000)) +
       annotation_logticks(sides = "l") +
       labs(
-        title = "Effective Sample Size",
-        subtitle = "Higher is better - ideally above 400 (blue line) for key parameters",
+        title = "Effective Sample Size (N_eff)",
+        subtitle = "Higher is better; 400+ is a common guideline (blue line).",
         x = "Model Specification",
         y = "Median N_eff (log scale)"
       ) +
@@ -396,19 +367,19 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
 
     plots$neff <- p_neff
 
-    # 6. Parameter-specific R-hat plot
+    # 6. Parameter-specific R-hat
     p_param_rhat <- ggplot(condition_data, aes(x = parameter, y = Rhat, color = fit_type)) +
       geom_boxplot(alpha = 0.7, outlier.size = 1) +
       geom_hline(
         yintercept = 1.05, linetype = "dashed",
-        color = diagnostic_colors$threshold, size = 1
+        color = diagnostic_colors$threshold, linewidth = 1
       ) +
       facet_wrap(~param_category, scales = "free_x", ncol = 2) +
       scale_color_viridis_d(option = "plasma", end = 0.8, name = "Model Type") +
       coord_cartesian(ylim = c(0.99, 1.1)) +
       labs(
-        title = "R-hat by Parameter Type",
-        subtitle = "Helps identify which parameters are difficult to sample",
+        title = "R-hat by Parameter Category",
+        subtitle = "Boxplots across replications for each parameter. Helps spot tough parameters.",
         x = NULL,
         y = "R-hat"
       ) +
@@ -421,13 +392,8 @@ create_diagnostic_plots <- function(condition_data, sampler_data, condition_info
   return(plots)
 }
 
-#' Create example trace plots for problematic fits
-#'
-#' When we see convergence problems, trace plots help us understand
-#' what's going wrong. This function finds the most problematic fit
-#' and shows its traces.
+#' Create example trace plots for the worst fit
 create_trace_plot_for_worst_fit <- function(condition_id, sampler_data, fits_dir) {
-  # Find the fit with the most divergences
   worst_fit <- sampler_data %>%
     arrange(desc(divergences)) %>%
     slice(1)
@@ -436,7 +402,6 @@ create_trace_plot_for_worst_fit <- function(condition_id, sampler_data, fits_dir
     return(NULL)
   }
 
-  # Load the problematic fit
   fit_file <- file.path(
     fits_dir,
     sprintf(
@@ -446,21 +411,17 @@ create_trace_plot_for_worst_fit <- function(condition_id, sampler_data, fits_dir
       worst_fit$rep_i
     )
   )
-
   fit <- safe_read_stanfit(fit_file)
   if (is.null(fit)) {
     return(NULL)
   }
 
-  # Extract key parameters for trace plot
   param_names <- c("phi11", "phi12", "phi21", "phi22", "rho", "theta")
   available_params <- param_names[param_names %in% names(fit)]
-
   if (length(available_params) == 0) {
     return(NULL)
   }
 
-  # Create trace plot using bayesplot
   trace_plot <- tryCatch(
     {
       bayesplot::mcmc_trace(fit, pars = available_params[1:min(4, length(available_params))]) +
@@ -471,7 +432,7 @@ create_trace_plot_for_worst_fit <- function(condition_id, sampler_data, fits_dir
             worst_fit$rep_i,
             worst_fit$divergences
           ),
-          subtitle = "Looking for 'hairy caterpillar' appearance - good mixing across chains"
+          subtitle = "Looking for 'hairy caterpillar' appearance - good mixing across chains."
         ) +
         theme_bw(base_size = 10)
     },
@@ -482,26 +443,17 @@ create_trace_plot_for_worst_fit <- function(condition_id, sampler_data, fits_dir
 }
 
 #' Generate comprehensive PDF report for a condition
-#'
-#' This is our main reporting function. It creates a complete diagnostic
-#' report for a single simulation condition, combining tables and plots
-#' into an easy-to-read PDF document.
 generate_condition_report <- function(condition_id, condition_info,
                                       condition_data, sampler_data,
                                       output_dir, fits_dir) {
-  # Create filename for this condition's report
   pdf_file <- file.path(output_dir, sprintf("convergence_report_cond_%03d.pdf", condition_id))
-
-  # Set up PDF device with appropriate size
   pdf(pdf_file, width = 11, height = 8.5)
 
-  # Page 1: Title and condition information
+  ## Page 1: Title/Guide
   grid.newpage()
-
-  # Create title
   title_text <- sprintf("MCMC Convergence Report\nCondition %03d", condition_id)
   condition_text <- sprintf(
-    "\nSimulation Parameters:\n%s | %s | %s | %s | %s\nVAR Coefficients: φ11=%.2f, φ12=%.2f, φ21=%.2f, φ22=%.2f",
+    "\nSimulation Parameters:\n%s | %s | %s | %s | %s\nVAR Coefficients: phi11=%.2f, phi12=%.2f, phi21=%.2f, phi22=%.2f",
     condition_info$T_fac,
     condition_info$dgp_alpha1_fac,
     condition_info$dgp_alpha2_fac,
@@ -522,32 +474,33 @@ generate_condition_report <- function(condition_id, condition_info,
     gp = gpar(fontsize = 12)
   )
 
-  # Add interpretation guide
-  guide_text <- "Interpretation Guide:
-• Divergences: Should be 0, indicates numerical problems if present
-• E-FMI: Should be > 0.3, measures sampling efficiency
-• R-hat: Should be < 1.05, measures chain convergence
-• N_eff: Should be > 400 for key parameters, effective sample size
-• Accept Stat: Should be near target (0.99), adaptation quality"
-
+  guide_text <- paste(
+    "Interpretation Guide:",
+    "* Divergences: Should be 0 (numerical issues if present)",
+    "* E-FMI: Should be > 0.3 for efficient sampling",
+    "* R-hat: Should be < 1.05 for reliable chain convergence",
+    "* N_eff: Should be > 400 for key parameters",
+    "* Accept Stat: Should be near adapt_delta (often 0.99)",
+    sep = "\n"
+  )
   grid.text(guide_text,
     x = 0.5, y = 0.3,
     gp = gpar(fontsize = 10, fontfamily = "mono"),
     just = "center"
   )
 
-  # Page 2: Summary tables
-  grid.newpage()
-  grid.text("Convergence Summary Tables",
-    x = 0.5, y = 0.95,
-    gp = gpar(fontsize = 16, fontface = "bold")
-  )
-
-  # Create and display overall summary table
+  ## Page 2: Summary Tables (only if they exist)
   summary_table <- create_condition_summary_table(condition_data, sampler_data)
+  param_table <- create_parameter_diagnostic_table(condition_data)
 
-  if (nrow(summary_table) > 0) {
-    # Convert to grob for plotting
+  if (nrow(summary_table) > 0 || (ncol(param_table) > 1 || nrow(param_table) > 1)) {
+    # create a new page only if there's content
+    grid.newpage()
+    grid.text("Convergence Summary & Parameter Diagnostics",
+      x = 0.5, y = 0.95,
+      gp = gpar(fontsize = 16, fontface = "bold")
+    )
+
     summary_grob <- tableGrob(
       summary_table,
       theme = ttheme_default(
@@ -556,19 +509,6 @@ generate_condition_report <- function(condition_id, condition_info,
         colhead = list(bg_params = list(fill = "lightblue"))
       )
     )
-
-    grid.draw(summary_grob)
-  }
-
-  # Page 3: Parameter-specific diagnostics table
-  if (nrow(condition_data) > 0) {
-    grid.newpage()
-    grid.text("Parameter-Specific Diagnostics",
-      x = 0.5, y = 0.95,
-      gp = gpar(fontsize = 16, fontface = "bold")
-    )
-
-    param_table <- create_parameter_diagnostic_table(condition_data)
 
     param_grob <- tableGrob(
       param_table,
@@ -579,33 +519,33 @@ generate_condition_report <- function(condition_id, condition_info,
       )
     )
 
-    # Position the table
-    grid.draw(param_grob)
+    # arrange both tables on the same page (stacked vertically)
+    grid.arrange(summary_grob, param_grob, ncol = 1)
   }
 
-  # Pages 4+: Diagnostic plots
+  ## Plot each diagnostic on its own page
   plots <- create_diagnostic_plots(condition_data, sampler_data, condition_info)
+  plot_names <- names(plots)
 
-  # Plot each diagnostic
-  for (plot_name in names(plots)) {
-    if (!is.null(plots[[plot_name]])) {
-      grid.newpage()
-      print(plots[[plot_name]])
+  for (plot_name in plot_names) {
+    p <- plots[[plot_name]]
+    if (!is.null(p)) {
+      grid.newpage() # new page for each plot
+      print(p)
     }
   }
 
-  # Final page: Trace plot for worst fit (if applicable)
+  # Worst fit trace plot (own page if it exists)
   trace_plot <- create_trace_plot_for_worst_fit(condition_id, sampler_data, fits_dir)
   if (!is.null(trace_plot)) {
     grid.newpage()
     print(trace_plot)
   }
 
-  # Close PDF device
   dev.off()
-
   cat(sprintf("Generated report for condition %03d: %s\n", condition_id, pdf_file))
 }
+
 
 # ===========================================================================
 # MAIN ANALYSIS WORKFLOW
@@ -613,12 +553,11 @@ generate_condition_report <- function(condition_id, condition_info,
 
 cat("\n=== Starting Comprehensive Convergence Analysis ===\n")
 
-# Step 1: Load simulation conditions
+# 1: Load simulation conditions
 sim_conds_file <- file.path(DATA_DIR, "sim_conditions.rds")
 if (!file.exists(sim_conds_file)) {
   stop("Simulation conditions file not found: ", sim_conds_file)
 }
-
 sim_conditions_df <- readRDS(sim_conds_file) %>%
   mutate(condition_id = as.integer(condition_id)) %>%
   select(
@@ -629,18 +568,16 @@ sim_conditions_df <- readRDS(sim_conds_file) %>%
 
 cat(sprintf("Loaded %d simulation conditions.\n", nrow(sim_conditions_df)))
 
-# Step 2: Load parameter results
+# 2: Load parameter results
 param_results_file <- file.path(RESULTS_DIR, "parameter_summary.rds")
 if (!file.exists(param_results_file)) {
   stop("Parameter results file not found: ", param_results_file)
 }
-
 results_df <- readRDS(param_results_file) %>%
   mutate(condition_id = as.integer(condition_id))
-
 cat(sprintf("Loaded parameter results: %d records.\n", nrow(results_df)))
 
-# Step 3: Load sampler diagnostics
+# 3: Load sampler diagnostics
 sampler_info_file <- file.path(RESULTS_DIR, "sampler_summary.rds")
 if (!file.exists(sampler_info_file)) {
   warning("Sampler info file not found. Some diagnostics will be unavailable.")
@@ -651,14 +588,13 @@ if (!file.exists(sampler_info_file)) {
   cat(sprintf("Loaded sampler diagnostics: %d records.\n", nrow(sampler_info_df)))
 }
 
-# Step 4: Prepare factor levels for consistent plotting
+# 4: Prepare factor levels
 dgp_copula_levels <- sort(unique(c(results_df$dgp_copula_type, sampler_info_df$dgp_copula_type)))
 dgp_alpha1_levels <- sort(unique(c(results_df$dgp_alpha1, sampler_info_df$dgp_alpha1)))
 dgp_alpha2_levels <- sort(unique(c(results_df$dgp_alpha2, sampler_info_df$dgp_alpha2)))
 dgp_tau_levels <- sort(unique(c(results_df$dgp_tau, sampler_info_df$dgp_tau)))
 T_levels <- sort(unique(c(results_df$T, sampler_info_df$T)))
 
-# Create condition info with factors
 condition_info_df <- sim_conditions_df %>%
   mutate(
     T_fac = factor(paste0("T=", T), levels = paste0("T=", T_levels)),
@@ -670,32 +606,25 @@ condition_info_df <- sim_conditions_df %>%
     dgp_tau_fac = factor(paste0("Tau=", dgp_tau), levels = paste0("Tau=", dgp_tau_levels))
   )
 
-# Step 5: Generate reports for each condition
+# 5: Generate reports for each condition
 cat("\n--- Generating Individual Condition Reports ---\n")
-
-# Process each condition
-for (i in 1:nrow(condition_info_df)) {
+for (i in seq_len(nrow(condition_info_df))) {
   condition <- condition_info_df[i, ]
   cond_id <- condition$condition_id
 
-  # Filter data for this condition
+  # Filter data
   cond_results <- results_df %>%
     filter(condition_id == cond_id) %>%
     mutate(
-      fitted_model_code = factor(fitted_model_code,
-        levels = c("NG", "NC", "SG", "SC")
-      ),
+      fitted_model_code = factor(fitted_model_code, levels = c("NG", "NC", "SG", "SC")),
       fit_type = ifelse(fitted_model_code == condition$correct_fit_model_code,
         "Correct", "Standard"
       )
     )
-
   cond_sampler <- sampler_info_df %>%
     filter(condition_id == cond_id) %>%
     mutate(
-      fitted_model_code = factor(fitted_model_code,
-        levels = c("NG", "NC", "SG", "SC")
-      ),
+      fitted_model_code = factor(fitted_model_code, levels = c("NG", "NC", "SG", "SC")),
       fit_type = ifelse(fitted_model_code == condition$correct_fit_model_code,
         "Correct", "Standard"
       )
@@ -707,7 +636,6 @@ for (i in 1:nrow(condition_info_df)) {
     next
   }
 
-  # Generate report
   generate_condition_report(
     condition_id = cond_id,
     condition_info = condition,
@@ -718,17 +646,13 @@ for (i in 1:nrow(condition_info_df)) {
   )
 }
 
-# Step 6: Create overall summary CSV
+# 6: Create overall summary CSV
 cat("\n--- Creating Overall Summary ---\n")
-
-# Aggregate diagnostics across all conditions
 overall_summary <- sampler_info_df %>%
   left_join(select(condition_info_df, condition_id, correct_fit_model_code),
     by = "condition_id"
   ) %>%
-  mutate(fit_type = ifelse(fitted_model_code == correct_fit_model_code,
-    "Correct", "Standard"
-  )) %>%
+  mutate(fit_type = ifelse(fitted_model_code == correct_fit_model_code, "Correct", "Standard")) %>%
   group_by(condition_id, fitted_model_code, fit_type) %>%
   summarise(
     n_reps = n(),
@@ -739,7 +663,6 @@ overall_summary <- sampler_info_df %>%
     .groups = "drop"
   )
 
-# Save summary
 write.csv(overall_summary,
   file.path(RESULTS_DIR, "convergence_summary_all_conditions.csv"),
   row.names = FALSE
