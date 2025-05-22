@@ -66,7 +66,8 @@ fits_dir <- file.path(ROOT_DIR, "test_fits")
 if (!dir.exists(fits_dir)) dir.create(fits_dir, recursive = TRUE)
 
 # fit models separately for each ID
-ids <- unique(clean_df$ID)
+# limit to the first 5 IDs for quicker example fits
+ids <- head(unique(clean_df$ID), 5)
 for (id in ids) {
   dat_id <- dplyr::filter(clean_df, ID == id)
   if (nrow(dat_id) < 2) next
