@@ -7,6 +7,8 @@ library(rstan)
 library(dplyr)
 library(ggplot2)
 
+options(mc.cores = 4)
+
 # Determine script directory; fall back to current working directory if
 # this.path is unavailable (e.g., when running interactively)
 SCRIPT_DIR <- tryCatch(this.path::this.dir(), error = function(e) getwd())
