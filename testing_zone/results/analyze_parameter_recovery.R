@@ -23,7 +23,10 @@ library(stringr)
 library(grid)
 
 # --- Configuration ---
-RESULTS_DIR <- this.dir()
+# Determine the directory of this script. When sourced or run via
+# `Rscript` the `this.path` package works well, but fall back to the
+# current working directory for interactive sessions.
+RESULTS_DIR <- tryCatch(this.dir(), error = function(e) getwd())
 DATA_DIR <- file.path(RESULTS_DIR, "../data")
 PLOTS_DIR <- file.path(RESULTS_DIR, "plots_param_recovery")
 if (!dir.exists(PLOTS_DIR)) dir.create(PLOTS_DIR)
