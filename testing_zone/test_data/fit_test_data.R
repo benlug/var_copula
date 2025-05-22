@@ -27,7 +27,7 @@ p_var2 <- ggplot(clean_df, aes(x = VAR2)) +
   ggtitle("Distribution of VAR2")
 
 # save plots
-plot_dir <- file.path("testing_zone")
+plot_dir <- file.path("testing_zone/test_data")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ggsave(file.path(plot_dir, "VAR1_distribution.png"), p_var1, width = 5, height = 4)
@@ -69,10 +69,11 @@ for (id in ids) {
   stan_data <- list(T = T_val, y = y_list)
 
   for (code in names(models)) {
-    fit <- sampling(models[[code]], data = stan_data,
-                    iter = 2000, warmup = 1000, chains = 4, refresh = 0)
+    fit <- sampling(models[[code]],
+      data = stan_data,
+      iter = 2000, warmup = 1000, chains = 4, refresh = 0
+    )
     out_file <- file.path(fits_dir, sprintf("fit_%s_id%03d.rds", code, id))
     saveRDS(fit, file = out_file)
   }
 }
-
