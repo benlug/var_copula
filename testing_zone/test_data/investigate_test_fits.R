@@ -6,14 +6,19 @@
 # and saves simple traceplots for each parameter.
 ###########################################################################
 
+
 # --- Libraries ---
 library(rstan)
 library(dplyr)
 library(ggplot2)
 
+# Determine script directory and base directory for results
+SCRIPT_DIR <- tryCatch(this.path::this.dir(), error = function(e) getwd())
+ROOT_DIR <- normalizePath(file.path(SCRIPT_DIR, ".."))
+
 # --- Configuration ---
-fits_dir <- file.path("testing_zone", "test_fits")
-plots_dir <- file.path("testing_zone", "fit_diagnostics")
+fits_dir <- file.path(ROOT_DIR, "test_fits")
+plots_dir <- file.path(ROOT_DIR, "fit_diagnostics")
 if (!dir.exists(plots_dir)) dir.create(plots_dir, recursive = TRUE)
 
 fit_files <- list.files(fits_dir, pattern = "\\.rds$", full.names = TRUE)
