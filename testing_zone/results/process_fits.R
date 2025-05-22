@@ -35,35 +35,30 @@ cat("Loaded", nrow(sim_conditions_df), "simulation conditions.\n")
 # --- Helper Functions ---
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
+# modified helper that also returns reason when a fit can't be read
 safe_read_stanfit <- function(filename) {
-  # ensure the rds contains a valid stanfit with samples
   if (!file.exists(filename)) {
-    return(NULL)
+    return(list(fit = NULL, reason = "file missing"))
   }
-  fit <- tryCatch(
-    {
-      readRDS(filename)
-    },
-    error = function(e) NULL
-  )
-  if (!is.null(fit) && inherits(fit, "stanfit")) {
-    samples_exist <- FALSE
-    # Check for non-empty samples slot more robustly
-    tryCatch(
-      {
-        samples_obj <- slot(fit, "sim")$samples
-        if (is.list(samples_obj) && length(samples_obj) > 0 && length(samples_obj[[1]]) > 0) {
-          samples_exist <- TRUE
-        }
-      },
-      error = function(e) {}
-    )
-    if (samples_exist) {
-      return(fit)
+  fit_obj <- tryCatch(readRDS(filename), error = function(e) e)
+  if (inherits(fit_obj, "error")) {
+    return(list(fit = NULL, reason = paste("readRDS error:", fit_obj$message)))
+  }
+  if (!inherits(fit_obj, "stanfit")) {
+    cls <- paste(class(fit_obj), collapse = ",")
+    return(list(fit = NULL, reason = paste("not stanfit (", cls, ")")))
+  }
+  samples_ok <- FALSE
+  tryCatch({
+    sims <- slot(fit_obj, "sim")$samples
+    if (is.list(sims) && length(sims) > 0 && length(sims[[1]]) > 0) {
+      samples_ok <- TRUE
     }
+  }, error = function(e) {})
+  if (!samples_ok) {
+    return(list(fit = NULL, reason = "stanfit has no samples"))
   }
-  # warning("Invalid/empty fit file: ", basename(filename), call.=FALSE); # Reduced verbosity
-  return(NULL)
+  list(fit = fit_obj, reason = NULL)
 }
 
 calc_e_fmi <- function(energy_vec) {
@@ -169,6 +164,7 @@ param_results_list <- list()
 sampler_results_list <- list()
 files_processed <- 0
 files_failed <- 0
+failure_logs <- list()
 
 for (fit_file in fit_files) {
   # cat(".") # Removed progress dot
@@ -182,15 +178,28 @@ for (fit_file in fit_files) {
   cond_id <- as.integer(match_info[1, 3])
   rep_i <- as.integer(match_info[1, 4])
 
-  fit <- safe_read_stanfit(fit_file)
-  if (is.null(fit)) {
+  fit_res <- safe_read_stanfit(fit_file)
+  if (is.null(fit_res$fit)) {
     files_failed <- files_failed + 1
+    failure_logs[[length(failure_logs) + 1]] <- tibble(
+      file = base_name,
+      condition_id = cond_id,
+      rep_i = rep_i,
+      reason = fit_res$reason
+    )
     next
   }
+  fit <- fit_res$fit
 
   sim_data_file <- file.path(DATA_DIR, sprintf("sim_data_cond%03d_rep%03d.rds", cond_id, rep_i)) # Simplified name
   if (!file.exists(sim_data_file)) {
     files_failed <- files_failed + 1
+    failure_logs[[length(failure_logs) + 1]] <- tibble(
+      file = base_name,
+      condition_id = cond_id,
+      rep_i = rep_i,
+      reason = "sim data missing"
+    )
     next
   }
   sim_data <- readRDS(sim_data_file)
@@ -200,6 +209,12 @@ for (fit_file in fit_files) {
   if (is.null(true_params) || is.null(dgp_info) || is.null(true_params$margin1_params) || is.null(true_params$margin2_params)) {
     warning("True params/DGP info/margin params missing: ", basename(sim_data_file), call. = FALSE)
     files_failed <- files_failed + 1
+    failure_logs[[length(failure_logs) + 1]] <- tibble(
+      file = base_name,
+      condition_id = cond_id,
+      rep_i = rep_i,
+      reason = "true params missing"
+    )
     next
   }
 
@@ -215,6 +230,12 @@ for (fit_file in fit_files) {
   )
   if (is.null(summary_df)) {
     files_failed <- files_failed + 1
+    failure_logs[[length(failure_logs) + 1]] <- tibble(
+      file = base_name,
+      condition_id = cond_id,
+      rep_i = rep_i,
+      reason = "summary extraction failed"
+    )
     next
   }
 
@@ -295,6 +316,16 @@ if (length(sampler_results_list) > 0) {
   cat("Saved sampler information to:", sampler_output_file, "\n")
 } else {
   warning("No sampler results processed.")
+}
+
+# Save details about failed fits for debugging
+if (length(failure_logs) > 0) {
+  failed_df <- bind_rows(failure_logs) %>% mutate(
+    file_size = file.info(file.path(FITS_DIR, file))$size
+  )
+  failure_report <- file.path(RESULTS_DIR, "failed_fit_report.csv")
+  write.csv(failed_df, failure_report, row.names = FALSE)
+  cat("Saved failed fit report to:", failure_report, "\n")
 }
 
 cat("--- Fit Processing Finished ---\n")
