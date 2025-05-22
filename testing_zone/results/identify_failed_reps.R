@@ -8,8 +8,8 @@ args <- commandArgs(trailingOnly = TRUE)
 base_dir <- if (length(args) >= 1) args[1] else getwd()
 
 # Paths follow the directory layout from run_pipeline.R
-DATA_DIR <- file.path(base_dir, "data")
-FITS_DIR <- file.path(base_dir, "fits")
+DATA_DIR <- file.path(base_dir, "../data")
+FITS_DIR <- file.path(base_dir, "../fits")
 conditions_file <- file.path(DATA_DIR, "sim_conditions.rds")
 
 if (!file.exists(conditions_file)) {
