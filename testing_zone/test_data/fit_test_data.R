@@ -5,10 +5,11 @@
 library(rstan)
 library(dplyr)
 library(ggplot2)
+library(this.path)
 
+setwd(this.dir())
 # --- load data ---
-data_file <- file.path("testing_zone", "test_data", "Example_skew_time_series.txt")
-df <- read.table(data_file, header = TRUE)
+df <- read.table("Example_skew_time_series.txt", header = TRUE)
 
 # remove rows with missing values
 clean_df <- na.omit(df)
@@ -27,7 +28,7 @@ p_var2 <- ggplot(clean_df, aes(x = VAR2)) +
   ggtitle("Distribution of VAR2")
 
 # save plots
-plot_dir <- file.path("testing_zone/test_data")
+plot_dir <- file.path("testing_zone")
 if (!dir.exists(plot_dir)) dir.create(plot_dir, recursive = TRUE)
 
 ggsave(file.path(plot_dir, "VAR1_distribution.png"), p_var1, width = 5, height = 4)
