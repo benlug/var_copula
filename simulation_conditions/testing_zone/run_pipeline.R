@@ -21,10 +21,10 @@ setwd(BASE_DIR)
 
 factor_levels <- list(
   dgp_copula = c("gaussian", "clayton"),
-  dgp_alpha1 = c(-9.0),
-  dgp_alpha2 = c(9.0),
+  dgp_alpha1 = c(9.0),
+  dgp_alpha2 = c(9.0, -9.0),
   dgp_tau = c(0.4),
-  T_levels = c(500),
+  T_levels = c(50, 500),
   phi11 = c(0.5),
   phi22 = c(0.5),
   phi12 = c(0.3),
