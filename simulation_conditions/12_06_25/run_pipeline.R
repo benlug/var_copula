@@ -31,8 +31,8 @@ dir.create(FITS_DIR, showWarnings = FALSE, recursive = TRUE)
 dir.create(RESULTS_DIR, showWarnings = FALSE, recursive = TRUE)
 
 # --- Control flags --------------------------------------------------------
-RUN_SINGLE_SIM <- FALSE # main 192‑cell simulation
-RUN_SINGLE_CHECK <- FALSE
+RUN_SINGLE_SIM <- TRUE # main 192‑cell simulation
+RUN_SINGLE_CHECK <- TRUE
 RUN_SINGLE_FIT <- TRUE
 RUN_EXP_TEST <- FALSE # will be in a separate script
 RUN_MULTILEVEL <- FALSE # phase‑2 scripts later
