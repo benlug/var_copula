@@ -6,5 +6,6 @@
 *.woff
 *.csv
 *.pdf
+*.DS_store
 
 skewnormal/
