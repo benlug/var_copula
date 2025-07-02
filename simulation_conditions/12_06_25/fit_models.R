@@ -111,7 +111,7 @@ fit_var1_copula_models <- function(data_dir, fits_dir, stan_models_dir,
                                    sim_conditions_file,
                                    stan_iter = 4000, stan_warmup = 2000,
                                    stan_chains = 4,
-                                   stan_adapt_delta = 0.9,
+                                   stan_adapt_delta = 0.95,
                                    stan_max_treedepth = 12,
                                    num_cores = parallel::detectCores() %||% 1,
                                    log_file = file.path(fits_dir, "stan_fit.log")) {

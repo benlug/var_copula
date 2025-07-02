@@ -1,188 +1,185 @@
 ###########################################################################
-# analysis_singlelevel.R
-#
-# • Assumes 192×100 datasets have been simulated and fitted
-# • Reads fits/, computes parameter bias, SD‑Bias, coverage
-# • Outputs CSVs + quick convergence plots
+# analysis_singlelevel.R  –  Robust diagnostics & bias summary
+#   • Handles fit_SG_* and fit_NG_* files
+#   • Uses correct single‑level parameter names
+#   • Never crashes on length‑0 / NULL objects
 ###########################################################################
 
-library(rstan)
-library(tidyverse)
-library(posterior)
-library(bayesplot)
+suppressPackageStartupMessages({
+  library(rstan)
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(stringr)
+})
 
-BASE_DIR <- this.dir() # folder with run_pipeline.R
+# ----------------- folders ----------------------------------------------
+BASE_DIR <- this.path::this.dir()
 DATA_DIR <- file.path(BASE_DIR, "data")
 FITS_DIR <- file.path(BASE_DIR, "fits")
-RESULTS_DIR <- file.path(BASE_DIR, "results")
-dir.create(RESULTS_DIR, showWarnings = FALSE)
-QC_DIR <- file.path(RESULTS_DIR, "quick_checks")
-dir.create(QC_DIR, showWarnings = FALSE)
+RES_DIR <- file.path(BASE_DIR, "results")
+dir.create(RES_DIR, FALSE, TRUE)
 
-design <- readRDS(file.path(DATA_DIR, "sim_conditions_singlelevel.rds")) %>%
-  select(condition_id, skew_level, direction, T, rho, VARset)
+# ----------------- helpers ----------------------------------------------
+safe_read <- function(path) tryCatch(readRDS(path), error = function(e) e)
 
-# -------------------------------------------------------------------------
-# helper: true parameter lookup
-# -------------------------------------------------------------------------
-true_value <- function(name, sim_obj) {
-  if (name == "rho") {
-    return(sim_obj$rho)
+count_div <- function(fit) {
+  if (!inherits(fit, "stanfit")) {
+    return(NA_integer_)
   }
-  if (grepl("^phi", name)) {
-    idx <- as.integer(substr(name, 4, 4))
-    jdx <- as.integer(substr(name, 5, 5))
-    return(sim_obj$phi_matrix[idx, jdx])
-  }
-  if (name == "mu[1]") {
-    return(0)
-  }
-  if (name == "mu[2]") {
-    return(0)
-  }
-  if (name == "sigma[1]" || name == "sigma[2]") {
-    return(1)
-  } # Var≈1 by design
-  NA_real_
+  sum(vapply(
+    rstan::get_sampler_params(fit, FALSE),
+    \(x) sum(x[, "divergent__"]), 0
+  ))
 }
 
-# valid parameters of interest
-keep_params <- c(
-  "mu[1]", "mu[2]",
-  "phi11", "phi12", "phi21", "phi22",
-  "sigma[1]", "sigma[2]",
-  "rho"
-)
+safe_summary <- function(fit, pars) {
+  if (!inherits(fit, "stanfit")) {
+    return(NULL)
+  }
+  it <- tryCatch(fit@sim$iter, error = function(e) NA_integer_)
+  if (length(it) == 0 || is.na(it) || it == 0) {
+    return(NULL)
+  }
+  as.data.frame(summary(fit, pars = pars)$summary, optional = TRUE) |>
+    tibble::rownames_to_column("param")
+}
 
-# -------------------------------------------------------------------------
-# iterate over fit files
-# -------------------------------------------------------------------------
+`%||%` <- function(a, b) if (!is.null(a)) a else b
+
+# parameters present in single‑level Stan models
+CORE <- c("mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22", "rho")
+EXTRA <- c("omega[1]", "omega[2]", "alpha[1]", "alpha[2]") # SG-only
+
+# ----------------- gather fit files -------------------------------------
 fit_files <- list.files(FITS_DIR,
-  "^fit_(NG|SG)_cond\\d+_rep\\d+\\.rds$",
+  "^fit_(SG|NG)_cond\\d+_rep\\d+\\.rds$",
   full.names = TRUE
 )
-stopifnot(length(fit_files) > 0)
-
-param_res <- list()
-sampler_res <- list()
-pb <- utils::txtProgressBar(0, length(fit_files), style = 3)
-
-for (i in seq_along(fit_files)) {
-  fn <- fit_files[i]
-  mat <- stringr::str_match(
-    basename(fn),
-    "^fit_([A-Z]{2})_cond(\\d+)_rep(\\d+)\\.rds$"
-  )
-  code <- mat[1, 2]
-  cond <- as.integer(mat[1, 3])
-  rep <- as.integer(mat[1, 4])
-
-  fit <- readRDS(fn)
-  sim_obj <- readRDS(
-    file.path(DATA_DIR, sprintf("sim_data_cond%03d_rep%03d.rds", cond, rep))
-  )
-
-  s <- summary(fit)$summary %>%
-    as.data.frame() %>%
-    rownames_to_column("parameter") %>%
-    filter(parameter %in% keep_params) %>%
-    transmute(
-      parameter,
-      post_mean = mean,
-      post_sd   = sd,
-      ci_low    = `2.5%`,
-      ci_high   = `97.5%`
-    )
-  s$true_val <- map_dbl(s$parameter, true_value, sim_obj = sim_obj)
-  s$bias <- s$post_mean - s$true_val
-  s$rel_bias <- ifelse(abs(s$true_val) > 1e-8,
-    s$bias / abs(s$true_val), NA_real_
-  )
-  s$coverage <- s$true_val >= s$ci_low & s$true_val <= s$ci_high
-  s$condition_id <- cond
-  s$rep_i <- rep
-  s$fitted_model <- code
-  param_res[[length(param_res) + 1]] <- s
-
-  sp <- rstan::get_sampler_params(fit, inc_warmup = FALSE)
-  div <- sum(map_dbl(sp, ~ sum(.x[, "divergent__"])))
-  eF <- mean(map_dbl(sp, ~ {
-    e <- .x[, "energy__"]
-    n <- length(e)
-    if (n < 3) {
-      return(NA_real_)
-    }
-    em <- mean(e)
-    varE <- var(e)
-    ac1 <- sum((e[-1] - em) * (e[-n] - em)) / (n - 1)
-    varE / (varE + 2 * ac1)
-  }), na.rm = TRUE)
-  sampler_res[[length(sampler_res) + 1]] <- tibble(
-    condition_id = cond, rep_i = rep, model = code,
-    divergences = div, eFMI = eF
-  )
-  utils::setTxtProgressBar(pb, i)
+if (!length(fit_files)) {
+  stop("No fit_*.rds files found in ", FITS_DIR)
 }
-close(pb)
 
-param_df <- bind_rows(param_res)
-sampler_df <- bind_rows(sampler_res)
+rep_rows <- vector("list", length(fit_files))
 
-# ------------------------------ SD‑Bias per condition ---------------------
-sd_bias_df <- param_df %>%
-  group_by(condition_id, fitted_model, parameter) %>%
-  summarise(
-    emp_sd = sd(post_mean),
-    mean_psd = mean(post_sd),
-    sd_bias = mean_psd - emp_sd,
-    .groups = "drop"
+for (k in seq_along(fit_files)) {
+  fp <- fit_files[k]
+  meta <- str_match(
+    basename(fp),
+    "fit_(SG|NG)_cond(\\d+)_rep(\\d+)\\.rds"
   )
+  model <- meta[2] # "SG" or "NG"
+  cid <- as.integer(meta[3])
+  rid <- as.integer(meta[4])
 
-# merge design factors
-param_df <- param_df %>% left_join(design, by = "condition_id")
-sampler_df <- sampler_df %>% left_join(design, by = "condition_id")
-sd_bias_df <- sd_bias_df %>% left_join(design, by = "condition_id")
+  fit_obj <- safe_read(fp)
 
-# ------------------------------ write CSVs --------------------------------
-write_csv(
-  param_df,
-  file.path(RESULTS_DIR, "parameter_summary.csv")
-)
-write_csv(
-  sampler_df,
-  file.path(RESULTS_DIR, "sampler_summary.csv")
-)
-write_csv(
-  sd_bias_df,
-  file.path(RESULTS_DIR, "sd_bias_summary.csv")
-)
-cat("CSV files written in results/\n")
+  ## ---- status determination (never length‑0) --------------------------
+  status <- "bad_rds"
+  if (inherits(fit_obj, "stanfit")) {
+    it <- tryCatch(fit_obj@sim$iter, error = function(e) NA_integer_)
+    if (length(it) == 0 || is.na(it)) {
+      status <- "not_iter"
+    } else if (it == 0) {
+      status <- "empty"
+    } else {
+      status <- "ok"
+    }
+  } else if (!inherits(fit_obj, "error")) {
+    status <- "not_stanfit"
+  }
 
-# ------------------------------ quick PDFs --------------------------------
-theme_set(theme_bw(base_size = 9))
-for (cid in sort(unique(sampler_df$condition_id))) {
-  pdf(file.path(QC_DIR, sprintf("quick_cond_%03d.pdf", cid)),
-    width = 7, height = 4
+  ## ---- simulation truth ----------------------------------------------
+  sim_path <- file.path(
+    DATA_DIR,
+    sprintf("sim_data_cond%03d_rep%03d.rds", cid, rid)
   )
-  d <- sampler_df %>% filter(condition_id == cid)
-  if (nrow(d) == 0) {
-    dev.off()
+  if (!file.exists(sim_path)) {
+    rep_rows[[k]] <- tibble(model,
+      condition_id = cid, rep_id = rid,
+      param = NA_character_, status,
+      note = "sim missing"
+    )
     next
   }
-  p1 <- ggplot(d, aes(model, divergences, fill = model)) +
-    geom_violin(scale = "width", alpha = .6) +
-    labs(
-      title = sprintf("Condition %03d – divergences", cid),
-      x = NULL, y = "# divergent transitions"
-    ) +
-    scale_y_sqrt() +
-    guides(fill = "none")
-  p2 <- ggplot(d, aes(model, eFMI, fill = model)) +
-    geom_violin(scale = "width", alpha = .6) +
-    geom_hline(yintercept = 0.3, linetype = "dashed", colour = "red") +
-    labs(title = "E‑FMI", x = NULL, y = "Energy fraction MI") +
-    guides(fill = "none")
-  gridExtra::grid.arrange(p1, p2, ncol = 2)
-  dev.off()
+  sim <- readRDS(sim_path)
+
+  truth <- c(
+    `mu[1]` = 0, `mu[2]` = 0,
+    phi11 = sim$phi_matrix[1, 1],
+    phi12 = sim$phi_matrix[1, 2],
+    phi21 = sim$phi_matrix[2, 1],
+    phi22 = sim$phi_matrix[2, 2],
+    rho = sim$rho
+  )
+  if (model == "SG") {
+    truth <- c(truth,
+      `omega[1]` = 1, `omega[2]` = 1,
+      `alpha[1]` = sim$true_params$margin1$alpha %||% 0,
+      `alpha[2]` = sim$true_params$margin2$alpha %||% 0
+    )
+  }
+
+  pars <- c(CORE, if (model == "SG") EXTRA)
+
+  sm <- safe_summary(fit_obj, pars)
+
+  if (is.null(sm)) {
+    rep_rows[[k]] <- tibble(model,
+      condition_id = cid, rep_id = rid,
+      param = NA_character_,
+      status, n_div = count_div(fit_obj)
+    )
+  } else {
+    rep_rows[[k]] <- sm |>
+      mutate(
+        truth = truth[param],
+        bias = mean - truth,
+        rel_bias = ifelse(abs(truth) < .Machine$double.eps,
+          bias, bias / abs(truth)
+        ),
+        cover95 = (`2.5%` <= truth & `97.5%` >= truth) * 1,
+        model = model,
+        condition_id = cid,
+        rep_id = rid,
+        n_div = count_div(fit_obj),
+        status = status
+      ) |>
+      select(model, condition_id, rep_id, param,
+        post_mean = mean, post_sd = sd,
+        l95 = `2.5%`, u95 = `97.5%`,
+        truth, bias, rel_bias, cover95,
+        n_div, status
+      )
+  }
 }
-cat("Quick convergence PDFs in results/quick_checks/\n")
+
+# ----------------- write replication‑level CSV --------------------------
+rep_tbl <- bind_rows(rep_rows)
+write_csv(rep_tbl, file.path(RES_DIR, "summary_replications.csv"))
+
+# ----------------- aggregate if usable rows exist -----------------------
+usable <- rep_tbl$status == "ok" & !is.na(rep_tbl$param)
+if (any(usable)) {
+  agg <- rep_tbl |>
+    filter(usable) |>
+    group_by(condition_id, model, param) |>
+    summarise(
+      mean_rel_bias = mean(rel_bias),
+      mean_bias     = mean(bias),
+      coverage_95   = mean(cover95),
+      mean_post_sd  = mean(post_sd),
+      emp_sd        = sd(post_mean),
+      sd_bias       = mean_post_sd - emp_sd,
+      mean_n_div    = mean(n_div),
+      .groups       = "drop"
+    )
+
+  write_csv(agg, file.path(RES_DIR, "summary_conditions.csv"))
+  message(
+    "✓ Analysis complete: ",
+    sum(usable), " parameter rows summarised."
+  )
+} else {
+  message("⚠ No fits contained usable draws for requested parameters.")
+}

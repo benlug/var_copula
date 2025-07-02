@@ -34,11 +34,9 @@ dir.create(RESULTS_DIR, showWarnings = FALSE, recursive = TRUE)
 RUN_SINGLE_SIM <- TRUE # main 192‑cell simulation
 RUN_SINGLE_CHECK <- TRUE
 RUN_SINGLE_FIT <- TRUE
-RUN_EXP_TEST <- FALSE # will be in a separate script
-RUN_MULTILEVEL <- FALSE # phase‑2 scripts later
 
-NUM_CORES <- parallel::detectCores() - 2
-REPS_PER_CELL <- NUM_CORES
+NUM_CORES <- parallel::detectCores() - 1
+REPS_PER_CELL <- 45
 
 # -------------------------------------------------------------------------
 # 1.  DESIGN GRID (192 conditions) ----------------------------------------
@@ -90,7 +88,7 @@ assign_skew <- function(level, dir_flag) {
 design_grid <- expand.grid(
   skew_level = c("moderateSN", "strongSN", "extremeCHI"),
   direction = c("++", "--", "+-", "-+"),
-  T = c(50, 100),
+  T = c(100, 250),
   rho = c(0.30, 0.50),
   VARset = names(var_sets),
   stringsAsFactors = FALSE
@@ -150,16 +148,6 @@ if (RUN_SINGLE_FIT) {
     stan_chains         = 4,
     num_cores           = max(1, NUM_CORES)
   )
-}
-
-# -------------------------------------------------------------------------
-# 5.  Place‑holders for later phases --------------------------------------
-# -------------------------------------------------------------------------
-if (RUN_EXP_TEST) {
-  # source("run_exponential_test.R")
-}
-if (RUN_MULTILEVEL) {
-  # source("run_multilevel_pipeline.R")
 }
 
 message("Pipeline complete.")
