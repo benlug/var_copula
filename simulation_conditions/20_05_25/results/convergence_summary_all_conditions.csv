@@ -1,0 +1,5 @@
+"condition_id","fitted_model_code","fit_type","n_reps","pct_diverged","avg_divergences","avg_efmi","pct_low_efmi"
+1,"NG","Standard",500,0,0,0.500107888897022,0
+1,"SG","Correct",493,0.405679513184584,0.00405679513184584,0.498906307555912,0
+2,"NG","Standard",500,0,0,0.500100885040579,0
+2,"SC","Correct",492,0.203252032520325,0.00203252032520325,0.498044653730445,0
