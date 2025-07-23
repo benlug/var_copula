@@ -1,6 +1,10 @@
 #!/usr/bin/env Rscript
 ###########################################################################
-# visualize_results.R  –  robust version (no patchwork, no sd_bias bug)
+# visualize_results.R  –  Updated July‑2025
+#   – works with new σ‑parameters
+#   – one PDF page per figure
+#   – tables saved alongside plots
+#   – global (across‑T) trend plots + matching box‑plots
 ###########################################################################
 
 suppressPackageStartupMessages({
@@ -14,17 +18,17 @@ suppressPackageStartupMessages({
   library(rstan)
 })
 
-## ── project paths ──────────────────────────────────────────────────────
+## ── paths ---------------------------------------------------------------
 BASE <- this.path::this.dir()
 DIR <- list(
   data = file.path(BASE, "data"),
   fits = file.path(BASE, "fits"),
   res = file.path(BASE, "results"),
   plots = file.path(BASE, "results", "plots"),
-  plots_global = file.path(BASE, "results", "plots_global")
+  plots_g = file.path(BASE, "results", "plots_global")
 )
 dir.create(DIR$plots, FALSE, TRUE)
-dir.create(DIR$plots_global, FALSE, TRUE)
+dir.create(DIR$plots_g, FALSE, TRUE)
 
 files <- list(
   cond   = file.path(DIR$res, "summary_conditions.csv"),
@@ -32,8 +36,7 @@ files <- list(
   design = file.path(DIR$data, "sim_conditions_singlelevel.rds")
 )
 stopifnot(
-  file.exists(files$cond),
-  file.exists(files$rep),
+  file.exists(files$cond), file.exists(files$rep),
   file.exists(files$design)
 )
 
@@ -48,279 +51,260 @@ rep <- read_csv(files$rep, show_col_types = FALSE) |>
   filter(!is.na(param)) |>
   left_join(design, by = "condition_id")
 
-## ── append status flags (divergences + bad Rhat) ------------------------
+## ── parameter ordering --------------------------------------------------
+param_levels <- c(
+  "omega[1]", "omega[2]", "alpha[1]", "alpha[2]",
+  "sigma[1]", "sigma[2]",
+  "mu[1]", "mu[2]",
+  "phi11", "phi12", "phi21", "phi22",
+  "rho"
+)
+rep <- mutate(rep, param = factor(param, levels = param_levels))
+cond <- mutate(cond, param = factor(param, levels = param_levels))
+
+## ── divergence & R‑hat status ------------------------------------------
 max_rhat_bad <- function(path, thr = 1.01) {
   if (!file.exists(path)) {
     return(NA)
   }
-  obj <- tryCatch(readRDS(path), error = function(e) NULL)
-  if (is.null(obj) || !inherits(obj, "stanfit")) {
+  o <- tryCatch(readRDS(path), error = \(e) NULL)
+  if (!inherits(o, "stanfit")) {
     return(NA)
   }
-  it <- tryCatch(obj@sim$iter, error = function(e) NA_integer_)
-  if (length(it) != 1 || is.na(it) || it == 0) {
+  it <- tryCatch(o@sim$iter, error = \(e) NA_integer_)
+  if (is.na(it) || it == 0) {
     return(NA)
   }
-  rh <- suppressWarnings(max(summary(obj)$summary[, "Rhat"], na.rm = TRUE))
-  if (is.infinite(rh)) {
+  rmax <- suppressWarnings(max(summary(o)$summary[, "Rhat"], na.rm = TRUE))
+  if (is.infinite(rmax)) {
     return(NA)
   }
-  rh > thr
+  rmax > thr
 }
-
-fit_paths <- list.files(DIR$fits,
-  "^fit_(SG|NG)_cond\\d+_rep\\d+\\.rds$",
-  full.names = TRUE
-)
-
+ff <- list.files(DIR$fits, "^fit_(SG|NG)_cond\\d+_rep\\d+\\.rds$", TRUE)
 rhat_tbl <- tibble(
-  fit_path = fit_paths,
-  bad_rhat = map_lgl(fit_paths, max_rhat_bad)
+  fit = ff,
+  bad_rhat = map_lgl(ff, max_rhat_bad)
 ) |>
   mutate(
-    model        = str_match(basename(fit_path), "fit_(SG|NG)_")[, 2],
-    condition_id = as.integer(str_match(fit_path, "cond(\\d+)")[, 2]),
-    rep_id       = as.integer(str_match(fit_path, "rep(\\d+)")[, 2])
+    model = str_match(basename(fit), "fit_(SG|NG)_")[, 2],
+    condition_id = as.integer(str_match(fit, "cond(\\d+)")[, 2]),
+    rep_id = as.integer(str_match(fit, "rep(\\d+)")[, 2])
   ) |>
-  select(-fit_path)
+  select(-fit)
 
 rep <- rep |>
   left_join(rhat_tbl, by = c("model", "condition_id", "rep_id")) |>
   mutate(
-    bad_rhat  = coalesce(bad_rhat, FALSE),
+    bad_rhat = coalesce(bad_rhat, FALSE),
     divergent = n_div > 0,
-    status    = ifelse(bad_rhat | divergent, "problem", "clean")
+    status = ifelse(bad_rhat | divergent, "problem", "clean")
   )
 
 ## ── plotting helpers ----------------------------------------------------
-facet_basic <- facet_grid(direction ~ VARset)
+facet_basic <- facet_grid(direction ~ VARset,
+  labeller = labeller(VARset = label_both)
+)
 facet_status <- facet_grid(status + direction ~ VARset,
   labeller = labeller(
-    status = c(clean = "clean", problem = "problem")
+    VARset = label_both,
+    status = c(
+      clean = "clean",
+      problem = "problem"
+    )
   )
 )
 
-table_grob <- function(df) {
+tab_grob <- function(df) {
   gridExtra::tableGrob(df,
     rows = NULL,
     theme = gridExtra::ttheme_minimal(
       base_size = 8,
-      padding = unit(c(2, 2), "mm")
+      padding = grid::unit(c(2, 2), "mm")
     )
   )
 }
 
-write_metric_plot <- function(df, metric, ylab, out_file, facet_fun) {
+write_metric_page <- function(df, metric, ylab, file_pdf,
+                              facet_fun, with_table = FALSE) {
   g <- ggplot(df, aes(param, .data[[metric]], fill = model)) +
-    geom_col(position = position_dodge(0.7), width = .6) +
+    geom_col(position = position_dodge(0.65), width = .55) +
     coord_flip() +
     facet_fun +
     theme_bw(8) +
     labs(x = "", y = ylab, title = metric)
-  ggsave(out_file, g, width = 11, height = 7)
+
+  pdf(file_pdf, 11, 7)
+  if (with_table) {
+    gridExtra::grid.arrange(
+      tab_grob(df |> select(
+        condition_id, model, param,
+        !!metric := .data[[metric]]
+      ))
+    )
+  }
+  print(g)
+  dev.off()
 }
 
-## ---- split‑metric (table + plot) ---------------------------------------
-write_metric_split <- function(rep_df, metric, ylab,
-                               out_file, facet_fun) {
-  ## --- compute metric at replication level -----------------------------
-  rep_df <- rep_df |>
-    mutate(.val = case_when(
+write_metric_split <- function(rep_df, metric, ylab, file_pdf) {
+  rep_df <- mutate(rep_df,
+    .val = case_when(
       metric == "rel_bias" ~ rel_bias,
-      metric == "cover95" ~ cover95,
+      metric == "coverage" ~ cover95,
       metric == "post_sd" ~ post_sd,
+      metric == "sd_bias" ~ post_sd, # temp, adjust later
       metric == "n_div" ~ n_div,
-      metric == "sd_bias" ~ NA_real_, # placeholder
       TRUE ~ NA_real_
-    ))
+    )
+  )
 
-  ## sd_bias needs posterior‑SD & empirical‑SD across reps: do it here
   if (metric == "sd_bias") {
     rep_df <- rep_df |>
       group_by(condition_id, model, param) |>
       mutate(
         emp_sd = sd(post_mean),
-        sd_bias = post_sd - emp_sd
+        .val = post_sd - emp_sd
       ) |>
-      ungroup() |>
-      mutate(.val = sd_bias)
+      ungroup()
   }
 
-  ## --- counts table -----------------------------------------------------
-  cnt_tbl <- rep_df |>
-    count(status, direction, VARset, name = "n_reps") |>
-    arrange(VARset, direction, status)
+  tbl_cnt <- rep_df |> count(status, direction, VARset, name = "n_reps")
 
-  ## --- aggregation for bar‑plot ----------------------------------------
-  rep_agg <- rep_df |>
-    group_by(
-      condition_id, model, param,
-      status, direction, VARset
-    ) |>
+  agg <- rep_df |>
+    group_by(condition_id, model, param, status, direction, VARset) |>
     summarise(mean_val = mean(.val, na.rm = TRUE), .groups = "drop")
 
-  ## --- figure -----------------------------------------------------------
-  g_tab <- table_grob(cnt_tbl)
-
-  g_plot <- ggplot(
-    rep_agg,
-    aes(param, mean_val, fill = model)
-  ) +
-    geom_col(position = "dodge", width = .65) +
-    coord_flip() +
-    facet_fun +
-    theme_bw(8) +
-    labs(
-      x = "", y = ylab,
-      title = paste0(metric, "  (clean vs problem)")
-    )
-
-  pdf(out_file, 11, 7)
-  gridExtra::grid.arrange(g_tab) # page 1
-  print(g_plot) # page 2
+  pdf(file_pdf, 11, 7)
+  gridExtra::grid.arrange(tab_grob(tbl_cnt))
+  print(
+    ggplot(agg, aes(param, mean_val, fill = model)) +
+      geom_col(position = "dodge", width = .55) +
+      coord_flip() +
+      facet_status +
+      theme_bw(8) +
+      labs(
+        x = "", y = ylab,
+        title = paste0(metric, " (clean vs problem)")
+      )
+  )
   dev.off()
 }
 
-write_divergence_table <- function(rep_df, out_file) {
+write_div_table <- function(rep_df, file_pdf) {
   tbl <- rep_df |>
     group_by(condition_id, model, direction, VARset) |>
-    summarise(
-      n_divergent = sum(n_div),
-      n_reps = n(), .groups = "drop"
-    )
-  pdf(out_file, 11, 7)
-  gridExtra::grid.arrange(table_grob(tbl))
+    summarise(n_div = sum(n_div), n_reps = n(), .groups = "drop")
+  pdf(file_pdf, 11, 7)
+  gridExtra::grid.arrange(tab_grob(tbl))
   dev.off()
 }
 
-## ── metric glossary -----------------------------------------------------
+global_plots <- function(df, metric, ylab, sk_tag) {
+  for (rho_val in sort(unique(df$rho))) {
+    df_r <- df |> filter(rho == rho_val)
+    tag <- paste0(sk_tag, "_rho", rho_val, "_", metric)
+    ## line
+    g1 <- ggplot(df_r, aes(factor(T), .data[[metric]],
+      colour = model, group = model
+    )) +
+      geom_line() +
+      geom_point() +
+      facet_grid(param ~ direction + VARset,
+        scales = "free_y",
+        labeller = labeller(VARset = label_both)
+      ) +
+      theme_bw(7) +
+      labs(
+        x = "T", y = ylab,
+        title = paste0(metric, "  |  ρ=", rho_val)
+      )
+    ## box
+    g2 <- ggplot(df_r, aes(factor(T), .data[[metric]], fill = model)) +
+      geom_boxplot(outlier.size = .4, position = "dodge") +
+      facet_grid(param ~ direction + VARset,
+        scales = "free_y",
+        labeller = labeller(VARset = label_both)
+      ) +
+      theme_bw(7) +
+      labs(
+        x = "T", y = ylab,
+        title = paste0("box‑plot ", metric, "  |  ρ=", rho_val)
+      )
+
+    pdf(file.path(DIR$plots_g, paste0(tag, ".pdf")), 12, 8)
+    print(g1)
+    print(g2)
+    dev.off()
+  }
+}
+
+## ── glossary ------------------------------------------------------------
 writeLines(c(
-  "Glossary of Simulation Metrics",
-  "-------------------------------------------",
-  "relative bias  = (posterior mean – truth) / |truth|",
-  "coverage_95    = 1 if 95% CI encloses truth, else 0",
-  "posterior SD   = mean posterior standard deviation",
-  "SD‑Bias        = posterior SD – empirical SD across reps",
-  "n_div          = # divergent transitions (after warm‑up)",
-  "status         = 'clean' (no divergences & good Rhat) vs problem"
+  "Metric definitions:",
+  "  relative bias  = (posterior mean − truth) / |truth|",
+  "  coverage_95    = proportion of reps where 95% CI covers truth",
+  "  posterior SD   = mean posterior standard deviation across reps",
+  "  SD‑Bias        = posterior SD − empirical SD(post. means)",
+  "  n_div          = divergent transitions (after warm‑up)",
+  "  clean          = no divergence & Rhat ≤ 1.01"
 ), file.path(DIR$res, "metric_glossary.txt"))
 
-## ── per‑skew‑level loop --------------------------------------------------
+## ── main loop -----------------------------------------------------------
+metrics_c <- list(
+  mean_rel_bias = list(ylab = "relative bias", m = "rel_bias"),
+  coverage_95   = list(ylab = "coverage", m = "coverage"),
+  mean_post_sd  = list(ylab = "posterior SD", m = "post_sd"),
+  sd_bias       = list(ylab = "SD‑Bias", m = "sd_bias"),
+  mean_n_div    = list(ylab = "# divergences", m = "n_div")
+)
+
 for (sk in unique(design$skew_level)) {
   sk_dir <- file.path(DIR$plots, sk)
   dir.create(sk_dir, FALSE, TRUE)
   cond_sk <- cond |> filter(skew_level == sk)
   rep_sk <- rep |> filter(skew_level == sk)
-
   combos <- unique(cond_sk[c("T", "rho")])
 
-  for (j in seq_len(nrow(combos))) {
-    Tval <- combos$T[j]
-    rho_val <- combos$rho[j]
+  for (i in seq_len(nrow(combos))) {
+    Tval <- combos$T[i]
+    rho_val <- combos$rho[i]
     tag <- paste0("T", Tval, "_rho", rho_val)
-    out_d <- file.path(sk_dir, tag)
-    dir.create(out_d, FALSE, TRUE)
+    outd <- file.path(sk_dir, tag)
+    dir.create(outd, FALSE, TRUE)
 
     sel_c <- cond_sk |> filter(T == Tval, rho == rho_val)
     sel_r <- rep_sk |> filter(T == Tval, rho == rho_val)
 
-    ## --- simple bar‑plots (all reps) -----------------------------------
-    write_metric_plot(
-      sel_c, "mean_rel_bias", "relative bias",
-      file.path(out_d, "bias_rel.pdf"), facet_basic
-    )
-    write_metric_plot(
-      sel_c, "coverage_95", "coverage",
-      file.path(out_d, "coverage.pdf"), facet_basic
-    )
-    write_metric_plot(
-      sel_c, "mean_post_sd", "posterior SD",
-      file.path(out_d, "post_sd.pdf"), facet_basic
-    )
-    write_metric_plot(
-      sel_c, "sd_bias", "SD‑Bias",
-      file.path(out_d, "sd_bias.pdf"), facet_basic
-    )
-    write_metric_plot(
-      sel_c, "mean_n_div", "# divergences",
-      file.path(out_d, "divergences.pdf"), facet_basic
-    )
+    ## unsplit pages + tables
+    lapply(names(metrics_c), function(mc) {
+      write_metric_page(
+        sel_c, mc, metrics_c[[mc]]$ylab,
+        file.path(outd, paste0(mc, ".pdf")),
+        facet_basic,
+        with_table = TRUE
+      )
+    })
 
-    ## --- split plots (table + bar) -------------------------------------
-    write_metric_split(
-      sel_r, "rel_bias", "relative bias",
-      file.path(out_d, "bias_rel_split.pdf"), facet_status
-    )
-    write_metric_split(
-      sel_r, "cover95", "coverage share",
-      file.path(out_d, "coverage_split.pdf"), facet_status
-    )
-    write_metric_split(
-      sel_r, "post_sd", "posterior SD",
-      file.path(out_d, "post_sd_split.pdf"), facet_status
-    )
-    write_metric_split(
-      sel_r, "sd_bias", "SD‑Bias",
-      file.path(out_d, "sd_bias_split.pdf"), facet_status
-    )
-    write_metric_split(
-      sel_r, "n_div", "# divergences",
-      file.path(out_d, "divergences_split.pdf"), facet_status
-    )
+    ## split pages
+    lapply(names(metrics_c), function(mc) {
+      write_metric_split(
+        sel_r, metrics_c[[mc]]$m, metrics_c[[mc]]$ylab,
+        file.path(outd, paste0(mc, "_split.pdf"))
+      )
+    })
 
-    ## --- stand‑alone divergence table ----------------------------------
-    write_divergence_table(
-      sel_r,
-      file.path(out_d, "divergence_table.pdf")
-    )
+    ## divergence count table
+    write_div_table(sel_r, file.path(outd, "divergence_table.pdf"))
+  }
+
+  ## global trend plots
+  for (mc in names(metrics_c)) {
+    global_plots(cond_sk, mc, metrics_c[[mc]]$ylab, sk)
   }
 }
 
-## ── global (metric × T × ρ) plots ---------------------------------------
-plot_global_metric <- function(df, metric, ylab, file_tag) {
-  g <- ggplot(
-    df,
-    aes(interaction(T, rho, sep = "\nρ="),
-      .data[[metric]],
-      colour = model, group = model
-    )
-  ) +
-    geom_point(position = position_dodge(0.3)) +
-    geom_line(position = position_dodge(0.3)) +
-    facet_grid(param ~ direction + VARset, scales = "free_y") +
-    theme_bw(7) +
-    labs(x = "T  × ρ", y = ylab, title = metric)
-  ggsave(file.path(DIR$plots_global, paste0(file_tag, ".pdf")),
-    g,
-    width = 12, height = 8
-  )
-}
-
-for (sk in unique(design$skew_level)) {
-  df_sk <- cond |> filter(skew_level == sk)
-  plot_global_metric(
-    df_sk, "mean_rel_bias", "relative bias",
-    paste0("global_bias_", sk)
-  )
-  plot_global_metric(
-    df_sk, "coverage_95", "coverage",
-    paste0("global_coverage_", sk)
-  )
-  plot_global_metric(
-    df_sk, "mean_post_sd", "posterior SD",
-    paste0("global_postsd_", sk)
-  )
-  plot_global_metric(
-    df_sk, "sd_bias", "SD‑Bias",
-    paste0("global_sdbias_", sk)
-  )
-  plot_global_metric(
-    df_sk, "mean_n_div", "# divergences",
-    paste0("global_ndiv_", sk)
-  )
-}
-
 message(
-  "✓ all plots & tables saved in ",
-  DIR$plots, "  and  ", DIR$plots_global
+  "✓ visualisation complete – see ",
+  DIR$plots, " and ", DIR$plots_g
 )
