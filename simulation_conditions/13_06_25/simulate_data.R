@@ -237,7 +237,7 @@ simulate_all_conditions_ml <- function(sim_conditions_df,
     registerDoParallel(cl)
     on.exit({
       stopCluster(cl)
-      registerDoSEQ()
+      foreach::registerDoSEQ()
     })
 
     foreach::foreach(

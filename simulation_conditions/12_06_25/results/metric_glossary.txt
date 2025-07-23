@@ -1,0 +1,8 @@
+Glossary of Simulation Metrics
+-------------------------------------------
+relative bias  = (posterior mean – truth) / |truth|
+coverage_95    = 1 if 95% CI encloses truth, else 0
+posterior SD   = mean posterior standard deviation
+SD‑Bias        = posterior SD – empirical SD across reps
+n_div          = # divergent transitions (after warm‑up)
+status         = 'clean' (no divergences & good Rhat) vs problem

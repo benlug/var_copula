@@ -1,94 +1,79 @@
 ###########################################################################
-# run_pipeline.R  –  Single‑Level VAR(1) Copula Simulation (192 cells)
-# -------------------------------------------------------------------------
-# • 3 skew magnitudes  × 4 direction patterns  × 2 T  × 2 ρ  × 4 VAR sets
-# • 100 replications per design cell
-# • Fits two models:  SkewNormal+G‑Copula  (correct)   vs.   Normal+G‑Copula
-# -------------------------------------------------------------------------
-# Requires:
-#   simulate_data.R
-#   check_simulations.R
-#   fit_models.R
-#   Stan files: model_SNG_sl.stan   model_NG_sl.stan
+# run_pipeline.R  – Single‑Level VAR(1) Copula simulation (72 cells)
 ###########################################################################
 
-# --- Setup ---------------------------------------------------------------
 library(dplyr)
-library(tidyr)
 library(purrr)
+library(tidyr)
 library(this.path)
 
+## -- folders -------------------------------------------------------------
 BASE_DIR <- this.dir()
 setwd(BASE_DIR)
-
 DATA_DIR <- file.path(BASE_DIR, "data")
 CHECKS_DIR <- file.path(BASE_DIR, "checks")
 FITS_DIR <- file.path(BASE_DIR, "fits")
-RESULTS_DIR <- file.path(BASE_DIR, "results")
-dir.create(DATA_DIR, showWarnings = FALSE, recursive = TRUE)
-dir.create(CHECKS_DIR, showWarnings = FALSE, recursive = TRUE)
-dir.create(FITS_DIR, showWarnings = FALSE, recursive = TRUE)
-dir.create(RESULTS_DIR, showWarnings = FALSE, recursive = TRUE)
+RESULT_DIR <- file.path(BASE_DIR, "results")
+dir.create(DATA_DIR, FALSE, TRUE)
+dir.create(CHECKS_DIR, FALSE, TRUE)
+dir.create(FITS_DIR, FALSE, TRUE)
+dir.create(RESULT_DIR, FALSE, TRUE)
 
-# --- Control flags --------------------------------------------------------
-RUN_SINGLE_SIM <- TRUE # main 192‑cell simulation
-RUN_SINGLE_CHECK <- TRUE
-RUN_SINGLE_FIT <- TRUE
+## -- resume flags --------------------------------------------------------
+START_COND <- as.integer(Sys.getenv("START_COND", "1")) # 1‑based index
+START_REP <- as.integer(Sys.getenv("START_REP", "1")) # within‑cell
+message(
+  ">>> Resume settings: start at condition ", START_COND,
+  ", replication ", START_REP
+)
 
-NUM_CORES <- parallel::detectCores() - 1
-REPS_PER_CELL <- 45
-
-# -------------------------------------------------------------------------
-# 1.  DESIGN GRID (192 conditions) ----------------------------------------
-# -------------------------------------------------------------------------
+## -- toggles & constants -------------------------------------------------
+RUN_SIM <- TRUE
+RUN_CHECKS <- TRUE
+RUN_FITTING <- TRUE
+REPS_PER_CELL <- 100
+NUM_CORES_OUT <- max(1, parallel::detectCores() - 1)
 set.seed(2025)
 
-# (a) VAR coefficient matrices
+## =======================================================================
+## 1 · Design grid -------------------------------------------------------
+## =======================================================================
 var_sets <- list(
   A = matrix(c(
     0.40, 0.10,
     0.10, 0.40
-  ), nrow = 2, byrow = TRUE),
+  ), 2, 2, byrow = TRUE),
   B = matrix(c(
-    0.40, -0.10,
-    -0.10, 0.40
-  ), nrow = 2, byrow = TRUE),
-  C = matrix(c(
     0.55, 0.10,
     0.10, 0.25
-  ), nrow = 2, byrow = TRUE),
-  D = matrix(c(
-    0.25, 0.15,
-    0.05, 0.55
-  ), nrow = 2, byrow = TRUE)
+  ), 2, 2, byrow = TRUE)
 )
 
-# (b) helper to assign marginal shape info
 assign_skew <- function(level, dir_flag) {
-  sign1 <- ifelse(substr(dir_flag, 1, 1) == "+", 1, -1)
-  sign2 <- ifelse(substr(dir_flag, 2, 2) == "+", 1, -1)
-  if (level == "moderateSN") {
-    list(
-      margin1 = list(type = "skewnormal", alpha = sign1 * 4),
-      margin2 = list(type = "skewnormal", alpha = sign2 * 4)
-    )
-  } else if (level == "strongSN") {
-    list(
-      margin1 = list(type = "skewnormal", alpha = sign1 * 9),
-      margin2 = list(type = "skewnormal", alpha = sign2 * 9)
-    )
-  } else { # extremeCHI
-    list(
-      margin1 = list(type = "chisq", df = 1, mirror = (sign1 < 0)),
-      margin2 = list(type = "chisq", df = 1, mirror = (sign2 < 0))
-    )
-  }
+  sgn <- function(x) ifelse(x == "+", 1, -1)
+  s1 <- sgn(substr(dir_flag, 1, 1))
+  s2 <- sgn(substr(dir_flag, 2, 2))
+  switch(level,
+    moderateSN = list(
+      margin1 = list(type = "skewnormal", alpha = s1 * 4),
+      margin2 = list(type = "skewnormal", alpha = s2 * 4)
+    ),
+    strongSN = list(
+      margin1 = list(type = "skewnormal", alpha = s1 * 9),
+      margin2 = list(type = "skewnormal", alpha = s2 * 9)
+    ),
+    extremeCHI = list(
+      margin1 = list(type = "chisq", df = 1, mirror = (s1 < 0)),
+      margin2 = list(type = "chisq", df = 1, mirror = (s2 < 0))
+    ),
+    stop("unknown skew level")
+  )
 }
 
 design_grid <- expand.grid(
   skew_level = c("moderateSN", "strongSN", "extremeCHI"),
-  direction = c("++", "--", "+-", "-+"),
-  T = c(100, 250),
+  direction = c("++", "--", "+-"),
+  T = c(50, 100),
   rho = c(0.30, 0.50),
   VARset = names(var_sets),
   stringsAsFactors = FALSE
@@ -100,54 +85,55 @@ design_grid <- expand.grid(
   rowwise() |>
   mutate(
     margin_info = list(assign_skew(skew_level, direction)),
-    phi_matrix  = list(var_sets[[VARset]])
+    phi_matrix = list(var_sets[[VARset]])
   ) |>
   ungroup()
 
 saveRDS(design_grid,
   file = file.path(DATA_DIR, "sim_conditions_singlelevel.rds")
 )
-message(sprintf("Design grid saved (%d conditions)", nrow(design_grid))) # 192
 
-# -------------------------------------------------------------------------
-# 2.  SIMULATION -----------------------------------------------------------
-# -------------------------------------------------------------------------
-if (RUN_SINGLE_SIM) {
-  source("simulate_data.R", local = TRUE) # defines simulate_all_conditions_var1()
+## =======================================================================
+## 2 · Simulation  (skips finished cells, supports resume) ---------------
+## =======================================================================
+if (RUN_SIM) {
+  source("simulate_data.R", local = TRUE)
+
   simulate_all_conditions_var1(
     sim_conditions_df = design_grid,
-    output_dir        = DATA_DIR
+    output_dir        = DATA_DIR,
+    start_condition   = START_COND,
+    start_rep         = START_REP
   )
-} else {
-  message(">> Skipping data generation.")
 }
 
-# -------------------------------------------------------------------------
-# 3.  QUICK VISUAL CHECKS --------------------------------------------------
-# -------------------------------------------------------------------------
-if (RUN_SINGLE_CHECK) {
+## =======================================================================
+## 3 · Quick checks -------------------------------------------------------
+## =======================================================================
+if (RUN_CHECKS) {
   source("check_simulations.R", local = TRUE)
-  run_post_sim_checks_var1(
-    data_dir   = DATA_DIR,
-    checks_dir = CHECKS_DIR
-  )
+  run_post_sim_checks_var1(DATA_DIR, CHECKS_DIR)
 }
 
-# -------------------------------------------------------------------------
-# 4.  STAN FITTING (Normal vs. SkewNormal) --------------------------------
-# -------------------------------------------------------------------------
-if (RUN_SINGLE_FIT) {
-  source("fit_models.R", local = TRUE) # defines fit_var1_copula_models()
+## =======================================================================
+## 4 · Stan fitting (resume‑aware) ---------------------------------------
+## =======================================================================
+if (RUN_FITTING) {
+  source("fit_models.R", local = TRUE)
   fit_var1_copula_models(
-    data_dir            = DATA_DIR,
-    fits_dir            = FITS_DIR,
-    stan_models_dir     = file.path(BASE_DIR, "stan"),
-    sim_conditions_file = file.path(DATA_DIR, "sim_conditions_singlelevel.rds"),
-    stan_iter           = 4000,
-    stan_warmup         = 2000,
-    stan_chains         = 4,
-    num_cores           = max(1, NUM_CORES)
+    data_dir = DATA_DIR,
+    fits_dir = FITS_DIR,
+    stan_dir = file.path(BASE_DIR, "stan"),
+    results_dir = RESULT_DIR,
+    chains = 4,
+    iter = 4000,
+    warmup = 2000,
+    adapt_delta = 0.95,
+    max_treedepth = 12,
+    cores_outer = NUM_CORES_OUT,
+    start_condition = START_COND,
+    start_rep = START_REP
   )
 }
 
-message("Pipeline complete.")
+message("\n>>> Pipeline COMPLETE.")
