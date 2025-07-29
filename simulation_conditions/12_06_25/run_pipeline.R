@@ -1,5 +1,5 @@
 ###########################################################################
-# run_pipeline.R  – Single‑Level VAR(1) Copula simulation (72 cells)
+# run_pipeline.R  – Single‑Level VAR(1) Copula simulation 
 ###########################################################################
 
 library(dplyr)
@@ -31,7 +31,7 @@ message(
 RUN_SIM <- TRUE
 RUN_CHECKS <- TRUE
 RUN_FITTING <- TRUE
-REPS_PER_CELL <- 100
+REPS_PER_CELL <- 200
 NUM_CORES_OUT <- max(1, parallel::detectCores() - 1)
 set.seed(2025)
 
@@ -128,8 +128,8 @@ if (RUN_FITTING) {
     chains = 4,
     iter = 4000,
     warmup = 2000,
-    adapt_delta = 0.95,
-    max_treedepth = 12,
+    adapt_delta = 0.99,
+    max_treedepth = 15,
     cores_outer = NUM_CORES_OUT,
     start_condition = START_COND,
     start_rep = START_REP
