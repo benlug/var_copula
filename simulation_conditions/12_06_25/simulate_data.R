@@ -49,11 +49,18 @@ generate_residuals <- function(n, m1, m2, copula_rho, eps = 1e-9) {
         }
       },
       chisq = {
+        # FIX 1: Standardize Chi-Squared (Mean=0, Var=1)
         df <- m$df
+        mean_chi <- df
+        sd_chi <- sqrt(2 * df)
         mir <- isTRUE(m$mirror)
+        
         function(pu) {
-          x <- stats::qchisq(pu, df)
-          if (mir) -x else x
+          x_raw <- stats::qchisq(pu, df)
+          # Standardize
+          x_std <- (x_raw - mean_chi) / sd_chi
+          # Mirror if needed (standardization ensures mirroring around 0)
+          if (mir) -x_std else x_std
         }
       },
       stop("unknown margin type")
@@ -70,7 +77,9 @@ generate_residuals <- function(n, m1, m2, copula_rho, eps = 1e-9) {
 ## ========================================================================
 simulate_one_replication <- function(cond_row, rep_i,
                                      output_dir, burnin = 30) {
-  mu_vec <- c(0, 0)
+  # Note: mu_vec is the process intercept. Since innovations are standardized 
+  # (Mean=0, Var=1) for all conditions now, the process mean is also 0.
+  mu_vec <- c(0, 0) 
   phi_mat <- cond_row$phi_matrix[[1]]
   T_time <- cond_row$T
   T_sim <- T_time + burnin
@@ -83,6 +92,9 @@ simulate_one_replication <- function(cond_row, rep_i,
   )
 
   y <- matrix(0, T_sim, 2)
+  # Initialize first time point using the first residual for better stability
+  y[1, ] <- eps_mat[1, ] 
+  
   for (t in 2:T_sim) {
     y[t, ] <- mu_vec + phi_mat %*% y[t - 1, ] + eps_mat[t, ]
   }
@@ -152,7 +164,9 @@ simulate_all_conditions_var1 <- function(sim_conditions_df,
       cond$T, cond$rho, cond$VARset
     ))
 
-    pb <- utils::txtProgressBar(first_rep, cond$n_reps, style = 3)
+    # FIX 2: Correct progress bar initialization
+    # Initialize min=1 (or 0) and set the starting point with 'initial'
+    pb <- utils::txtProgressBar(min = 1, max = cond$n_reps, initial = first_rep, style = 3)
 
     for (r in seq(from = first_rep, to = cond$n_reps)) {
       file_target <- file.path(
