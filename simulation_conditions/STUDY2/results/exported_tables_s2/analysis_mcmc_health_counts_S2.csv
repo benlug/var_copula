@@ -1,0 +1,10 @@
+Model,T,Clean,Problematic,Failed/Error
+Normal (NG),50,2400,0,0
+Normal (NG),100,2400,0,0
+Normal (NG),200,2400,0,0
+Skew-Normal (SG),50,0,0,0
+Skew-Normal (SG),100,0,0,0
+Skew-Normal (SG),200,0,0,0
+Exponential (EG),50,2399,1,0
+Exponential (EG),100,2399,1,0
+Exponential (EG),200,2398,2,0

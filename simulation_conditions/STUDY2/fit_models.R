@@ -1,6 +1,13 @@
 #!/usr/bin/env Rscript
 ###########################################################################
-# fit_models.R  – (FIXED: Corrected namespace for registerDoSEQ; Robust initialization and cleanup)
+# fit_models.R  – Robust sampling + caching + EG init (eta param)
+# Changes vs prior:
+#   • Model cache keyed by .stan source hash (auto recompile on changes)
+#   • Do NOT intercept warnings as return values; only catch errors
+#   • Skip-if-exists only for valid stanfit; delete stubs and refit
+#   • EG init returns 'eta' (log-slack), not 'sigma_exp'
+#   • Save error objects under fit_ERR_* (won’t block retries)
+#   • Parallel cleanup uses foreach::registerDoSEQ
 ###########################################################################
 
 fit_var1_copula_models <- function(data_dir,
@@ -16,7 +23,6 @@ fit_var1_copula_models <- function(data_dir,
                                    start_condition = 1,
                                    start_rep = 1) {
   suppressPackageStartupMessages({
-    # Load necessary libraries and ensure they are available
     if (!requireNamespace("rstan", quietly = TRUE)) stop("rstan package required.")
     if (!requireNamespace("stringr", quietly = TRUE)) stop("stringr package required.")
     if (!requireNamespace("digest", quietly = TRUE)) stop("digest package required.")
@@ -34,7 +40,6 @@ fit_var1_copula_models <- function(data_dir,
 
   SEED_BASE_R <- 1e6
   SEED_BASE_STAN <- 5e6
-  # Define the helper function within the scope so foreach detects it
   `%||%` <- function(a, b) if (!is.null(a)) a else b
 
   side_dir <- file.path(results_dir, "init_sidecar")
@@ -42,24 +47,29 @@ fit_var1_copula_models <- function(data_dir,
   dir.create(side_dir, FALSE, TRUE)
   log_file <- file.path(fits_dir, "stan_fit.log")
 
-  ## -- compile or load cached models ------------------------------------
-  # The design allows models to be optionally present.
+  ## -- compile or load cached models (hash by source) --------------------
+  # Compiles to stan_dir/<tag>_<hash8>.rds and prunes old hashes for same tag
   model_cache <- function(path, tag) {
-    rds <- file.path(stan_dir, paste0(tag, ".rds"))
-    if (file.exists(path)) {
-      if (file.exists(rds)) {
-        message("Loading cached model: ", tag)
-        return(readRDS(rds))
-      } else {
-        message("Compiling model: ", tag)
-        # Use rstan::stan_model to be explicit
-        m <- rstan::stan_model(path, model_name = tag)
-        saveRDS(m, rds)
-        return(m)
-      }
-    } else {
-      # Silenced: message("Stan file not found for ", tag)
+    if (!file.exists(path)) {
       return(NULL)
+    }
+    code <- readChar(path, file.info(path)$size)
+    h <- digest::digest(code, algo = "xxhash64")
+    rds <- file.path(stan_dir, sprintf("%s_%s.rds", tag, substr(h, 1, 8)))
+
+    # prune older versions of same tag
+    old <- list.files(stan_dir, paste0("^", tag, "_[0-9a-f]{8}\\.rds$"), full.names = TRUE)
+    old <- setdiff(old, rds)
+    if (length(old)) try(unlink(old), silent = TRUE)
+
+    if (file.exists(rds)) {
+      message("Loading cached model: ", tag, " [", substr(h, 1, 8), "]")
+      readRDS(rds)
+    } else {
+      message("Compiling model: ", tag, " [", substr(h, 1, 8), "]")
+      m <- rstan::stan_model(path, model_name = paste0(tag, "_", substr(h, 1, 8)))
+      saveRDS(m, rds)
+      m
     }
   }
 
@@ -68,16 +78,11 @@ fit_var1_copula_models <- function(data_dir,
     NG = model_cache(file.path(stan_dir, "model_NG_sl.stan"), "Normal_Gauss"),
     EG = model_cache(file.path(stan_dir, "model_EG_sl.stan"), "Exp_Gauss")
   )
-
-  # Remove models that didn't load
   models <- Filter(Negate(is.null), models)
-  if (length(models) == 0) stop("No models loaded successfully. Check Stan files.")
-
-  # Report which models were successfully loaded
+  if (!length(models)) stop("No models loaded successfully. Check Stan files.")
   message("Successfully loaded models: ", paste(names(models), collapse = ", "))
 
-
-  ## -- helper: minimal init list per model ------------------------------
+  ## -- helpers: init lists ----------------------------------------------
   make_init <- function(code) {
     base <- list(
       mu = rnorm(2, 0, 0.1),
@@ -90,123 +95,88 @@ fit_var1_copula_models <- function(data_dir,
     } else if (code == "NG") {
       c(base, list(sigma = runif(2, 0.8, 1.2)))
     } else {
-      return(NULL)
+      NULL
     }
   }
 
-  ## -- helper: INTELLIGENT init for EG model -------------------------------
-  # This function provides a "warm start" to avoid support violations.
-  make_init_EG <- function(y_data, chain_id) {
-    # Use a slightly different seed per chain for random part of init
+  # EG: data-driven init for eta (log slack); uses skew directions
+  make_init_EG <- function(y_data, chain_id, skew_dir) {
     set.seed(SEED_BASE_R + chain_id)
 
-    df <- as.data.frame(y_data)
-    names(df) <- c("y1", "y2")
-    # Use dplyr::lag for safety
+    df <- data.frame(y1 = y_data[, 1], y2 = y_data[, 2])
     df$y1_lag <- dplyr::lag(df$y1)
     df$y2_lag <- dplyr::lag(df$y2)
 
-    # Fit simple linear models to get plausible starting points
-    # Robustness check for lm (e.g., very short T)
-    fit1 <- try(lm(y1 ~ y1_lag + y2_lag, data = df), silent = TRUE)
-    fit2 <- try(lm(y2 ~ y1_lag + y2_lag, data = df), silent = TRUE)
+    f1 <- try(lm(y1 ~ y1_lag + y2_lag, data = df), silent = TRUE)
+    f2 <- try(lm(y2 ~ y1_lag + y2_lag, data = df), silent = TRUE)
 
-    # Fallback initialization if lm fails or produces NAs/Infs
-    use_fallback <- inherits(fit1, "try-error") || inherits(fit2, "try-error") ||
-      !all(is.finite(coef(fit1))) || !all(is.finite(coef(fit2)))
-
-    if (use_fallback) {
-      return(list(
+    fallback <- function() {
+      list(
         mu = rnorm(2, 0, 0.1),
         phi11 = 0.3, phi12 = 0.1, phi21 = 0.1, phi22 = 0.3,
-        sigma_exp = c(1, 1),
-        rho = 0.3
-      ))
+        eta = rep(log(0.2), 2), # slack ≈ 0.2
+        rho = runif(1, -0.5, 0.5)
+      )
     }
 
-    # Get initial residuals
-    res1 <- residuals(fit1)
-    res2 <- residuals(fit2)
+    if (inherits(f1, "try-error") || inherits(f2, "try-error")) {
+      return(fallback())
+    }
+    if (!all(is.finite(coef(f1))) || !all(is.finite(coef(f2)))) {
+      return(fallback())
+    }
 
-    # Set sigma_exp to be slightly larger than the max absolute residual
-    # This ensures the support condition is met at the start.
-    init_sigma1 <- max(abs(res1), na.rm = TRUE) * 1.1 + 0.1
-    init_sigma2 <- max(abs(res2), na.rm = TRUE) * 1.1 + 0.1
-
-    # Extract coefficients safely
-    coef1 <- coef(fit1)
-    coef2 <- coef(fit2)
-
+    res <- cbind(residuals(f1), residuals(f2))
+    b <- c(
+      max(-skew_dir[1] * res[, 1], na.rm = TRUE),
+      max(-skew_dir[2] * res[, 2], na.rm = TRUE)
+    )
     list(
-      # Initialize mu and phi from the linear model fits
-      mu = c(coef1[1], coef2[1]),
-      # Use default if NA (can happen with perfect collinearity, though unlikely here)
-      phi11 = ifelse(is.na(coef1["y1_lag"]), 0.3, coef1["y1_lag"]),
-      phi12 = ifelse(is.na(coef1["y2_lag"]), 0.1, coef1["y2_lag"]),
-      phi21 = ifelse(is.na(coef2["y1_lag"]), 0.1, coef2["y1_lag"]),
-      phi22 = ifelse(is.na(coef2["y2_lag"]), 0.3, coef2["y2_lag"]),
-      # Initialize sigma_exp with a safe margin
-      sigma_exp = c(init_sigma1, init_sigma2),
-      # Randomly initialize rho
-      rho = runif(1, -0.5, 0.5)
+      mu    = c(coef(f1)[1], coef(f2)[1]),
+      phi11 = coef(f1)["y1_lag"] %||% 0.3,
+      phi12 = coef(f1)["y2_lag"] %||% 0.1,
+      phi21 = coef(f2)["y1_lag"] %||% 0.1,
+      phi22 = coef(f2)["y2_lag"] %||% 0.3,
+      eta   = rep(log(0.2), 2), # ETA, not sigma_exp
+      rho   = runif(1, -0.5, 0.5)
     )
   }
 
-
-  ## -- list data sets & honour resume -----------------------------------
-  paths <- list.files(data_dir, "^sim_data_cond\\d+_rep\\d+\\.rds$",
-    full.names = TRUE
-  )
+  ## -- enumerate datasets & resume --------------------------------------
+  paths <- list.files(data_dir, "^sim_data_cond\\d+_rep\\d+\\.rds$", full.names = TRUE)
   meta <- stringr::str_match(basename(paths), "cond(\\d+)_rep(\\d+)")
-
-  if (length(paths) == 0) {
+  if (!length(paths)) {
     message("No data files found in ", data_dir)
     return(invisible())
   }
-
-  # Ensure meta extraction was successful
   if (is.null(meta) || nrow(meta) != length(paths) || ncol(meta) < 3) {
     stop("Error parsing filenames in data directory.")
   }
 
   keep <- (as.integer(meta[, 2]) > start_condition) |
-    (as.integer(meta[, 2]) == start_condition &
-      as.integer(meta[, 3]) >= start_rep)
+    (as.integer(meta[, 2]) == start_condition & as.integer(meta[, 3]) >= start_rep)
   paths <- paths[keep]
   if (!length(paths)) {
     message("Nothing to fit (all requested cells done).")
     return(invisible())
   }
 
-  ## -- foreach cluster ---------------------------------------------------
-  # Check if cores_outer is valid
-  if (is.null(cores_outer) || !is.numeric(cores_outer) || cores_outer < 1) {
-    cores_outer <- 1
-  }
-
+  ## -- parallel ----------------------------------------------------------
+  if (is.null(cores_outer) || !is.numeric(cores_outer) || cores_outer < 1) cores_outer <- 1
   message("Starting parallel cluster with ", cores_outer, " cores.")
   cl <- parallel::makeCluster(cores_outer)
   doParallel::registerDoParallel(cl)
-
-  # Robust cleanup: Ensure the cluster is stopped and the backend is reset to sequential
   on.exit({
-    # message("Cleaning up parallel environment.") # Optional: message for verbosity
     try(parallel::stopCluster(cl), silent = TRUE)
-    # FIX: registerDoSEQ belongs to the 'foreach' package, not 'doParallel'.
-    # We call it robustly to ensure the environment is clean after the function exits.
-    if (requireNamespace("foreach", quietly = TRUE)) {
-      try(foreach::registerDoSEQ(), silent = TRUE)
-    }
+    if (requireNamespace("foreach", quietly = TRUE)) try(foreach::registerDoSEQ(), silent = TRUE)
   })
 
-  # Set internal Stan cores to 1 to avoid nested parallelism
-  options(mc.cores = 1)
+  options(mc.cores = 1) # avoid nested parallelism inside workers
 
-  # foreach automatically detects the required variables/functions (models, make_init_EG, etc.)
   log_vec <- foreach::foreach(
     p              = paths,
     .packages      = c("rstan", "digest", "stringr", "dplyr"),
-    .errorhandling = "pass" # Allows catching errors from workers
+    .errorhandling = "pass"
   ) %dopar% {
     m <- stringr::str_match(basename(p), "cond(\\d+)_rep(\\d+)")
     cid <- as.integer(m[2])
@@ -220,139 +190,143 @@ fit_var1_copula_models <- function(data_dir,
     y_matrix <- as.matrix(ds$data[, c("y1", "y2")])
     sdat_base <- list(T = ds$T, y = y_matrix)
 
-    # Handle potential missing mirror info gracefully
+    # Skew directions from DGP mirrors
     m1_mirror <- ds$true_params$margin1$mirror %||% FALSE
     m2_mirror <- ds$true_params$margin2$mirror %||% FALSE
     skew_directions <- c(if (m1_mirror) -1 else 1, if (m2_mirror) -1 else 1)
 
     msgs <- character()
 
-    # Determine DGP type
+    # Decide which models to run
     dgp_type <- ds$true_params$margin1$type %||% "unknown"
-    is_exponential_dgp <- dgp_type == "exponential"
-
-    # Logic: If exponential DGP, try to run all *loaded* models.
-    # If not exponential (e.g., Study 1), run all loaded models except EG.
-    models_to_run <- if (is_exponential_dgp) names(models) else setdiff(names(models), "EG")
-
-    # Filter against models that are actually loaded
+    is_exp_dgp <- identical(dgp_type, "exponential")
+    models_to_run <- if (is_exp_dgp) names(models) else setdiff(names(models), "EG")
     models_to_run <- intersect(models_to_run, names(models))
 
     for (code in models_to_run) {
       fit_path <- file.path(fits_dir, sprintf("fit_%s_cond%03d_rep%03d.rds", code, cid, rid))
+
+      # Skip only if an existing file is a real stanfit; otherwise refit
       if (file.exists(fit_path)) {
-        msgs <- c(msgs, sprintf("%s cond%03d rep%03d : skip (exists)", code, cid, rid))
-        next
+        chk <- try(readRDS(fit_path), silent = TRUE)
+        if (inherits(chk, "stanfit") && length(chk@sim) > 0 && length(chk@sim$samples) > 0) {
+          msgs <- c(msgs, sprintf("%s cond%03d rep%03d : skip (exists)", code, cid, rid))
+          next
+        } else {
+          try(unlink(fit_path), silent = TRUE) # remove stub/error so we can refit
+        }
       }
 
       sdat <- sdat_base
-
-      # Select the correct initialization function
+      # EG needs skew_direction in data and eta init
       if (code == "EG") {
         sdat$skew_direction <- skew_directions
-        # Use the data-driven init function for the EG model
-        inits <- lapply(1:chains, function(chain_id) make_init_EG(y_matrix, chain_id))
+        inits <- lapply(seq_len(chains), function(k) make_init_EG(y_matrix, cid * 1000 + rid * 10 + k, skew_directions))
       } else {
-        # Use the standard random init for NG and SG models
-        # Ensure reproducibility within the parallel loop
-        set.seed(SEED_BASE_R + cid * 1000 + rid)
+        set.seed(SEED_BASE_R + cid * 1000 + rid) # reproducible inits per dataset
         inits <- replicate(chains, make_init(code), simplify = FALSE)
       }
 
-      # Check if initialization generation failed
-      if (is.null(inits) || length(inits) == 0 || is.null(inits[[1]])) {
-        msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL – Initialization generation failed", code, cid, rid))
+      if (!length(inits) || is.null(inits[[1]])) {
+        msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL – init generation failed", code, cid, rid))
         next
       }
 
       seeds_stan <- SEED_BASE_STAN + cid * 1000 + rid + 0:(chains - 1)
 
-      # Save initialization sidecar
+      # Save init sidecar (for debugging/repro)
       try(saveRDS(
         list(
           meta = list(model = code, condition_id = cid, rep_id = rid, time = Sys.time()),
           seeds_stan = seeds_stan, init = inits
         ),
         file.path(side_dir, sprintf("INIT_%s_cond%03d_rep%03d.rds", code, cid, rid))
-      ))
+      ), silent = TRUE)
 
-      ## --- sampling ----------------------------------------------------
-      fit <- tryCatch(
-        rstan::sampling(models[[code]],
-          data = sdat,
-          chains = chains, iter = iter, warmup = warmup,
-          seed = seeds_stan[1],
-          init = inits,
-          control = list(adapt_delta = adapt_delta, max_treedepth = max_treedepth),
-          refresh = 0, # Suppress Stan's internal progress messages
-          cores = 1 # Ensure single core usage within the worker
+      ## --- sampling (catch errors, NOT warnings) -----------------------
+      warn_msgs <- character()
+      fit <- withCallingHandlers(
+        tryCatch(
+          rstan::sampling(
+            models[[code]],
+            data = sdat,
+            chains = chains, iter = iter, warmup = warmup,
+            seed = seeds_stan[1],
+            init = inits,
+            control = list(adapt_delta = adapt_delta, max_treedepth = max_treedepth),
+            refresh = 0,
+            cores = 1
+          ),
+          error = function(e) e
         ),
-        error = function(e) e,
-        warning = function(w) w
+        warning = function(w) {
+          warn_msgs <<- c(warn_msgs, conditionMessage(w))
+          invokeRestart("muffleWarning")
+        }
       )
 
-      # Save the result (even if it's an error object)
-      saveRDS(fit, fit_path)
+      if (inherits(fit, "stanfit") && length(fit@sim) > 0 && length(fit@sim$samples) > 0) {
+        # Save the successful fit
+        saveRDS(fit, fit_path)
 
-      if (inherits(fit, "stanfit") && length(fit@sim) > 0) {
-        # Check for divergences
+        # Divergence count
         divs <- tryCatch(
           {
             sp <- rstan::get_sampler_params(fit, inc_warmup = FALSE)
-            if (is.list(sp) && length(sp) > 0) {
-              sum(vapply(sp, function(x) sum(x[, "divergent__"]), 0L))
-            } else {
-              NA_integer_
-            }
+            if (is.list(sp) && length(sp) > 0) sum(vapply(sp, function(x) sum(x[, "divergent__"]), 0L)) else NA_integer_
           },
           error = function(e) NA_integer_
         )
 
-        msgs <- c(msgs, sprintf("%s cond%03d rep%03d : OK (%d div)", code, cid, rid, divs))
+        msgs <- c(msgs, sprintf(
+          "%s cond%03d rep%03d : OK (%s div)",
+          code, cid, rid, ifelse(is.na(divs), "NA", as.character(divs))
+        ))
+        if (length(warn_msgs)) {
+          msgs <- c(msgs, sprintf(
+            "%s cond%03d rep%03d : WARN – %s",
+            code, cid, rid, paste(unique(warn_msgs), collapse = " | ")
+          ))
+        }
+      } else if (inherits(fit, "error")) {
+        fail_path <- file.path(fits_dir, sprintf("fit_ERR_%s_cond%03d_rep%03d.rds", code, cid, rid))
+        saveRDS(fit, fail_path)
+        msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL – %s", code, cid, rid, conditionMessage(fit)))
       } else {
-        # Handle error or warning results, or empty stanfit objects
-        msg <- if (inherits(fit, "error")) conditionMessage(fit) else if (inherits(fit, "warning")) conditionMessage(fit) else "Unknown failure or empty fit"
-        msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL – %s", code, cid, rid, msg))
+        # Unexpected type (very rare); save separately
+        fail_path <- file.path(fits_dir, sprintf("fit_MISC_%s_cond%03d_rep%03d.rds", code, cid, rid))
+        saveRDS(fit, fail_path)
+        msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL – unexpected return type", code, cid, rid))
       }
-    }
-    # Return the log messages for this dataset
+    } # models loop
+
     msgs
-  }
+  } # foreach
 
   ## -- write log safely --------------------------------------------------
-  # Process results from foreach loop
   log_entries <- character()
   errors_occurred <- FALSE
-
   for (result in log_vec) {
     if (inherits(result, "error")) {
-      # Handle errors that occurred during the %dopar% execution itself
       log_entries <- c(log_entries, paste("FOREACH ERROR:", conditionMessage(result)))
       errors_occurred <- TRUE
     } else if (is.character(result)) {
       log_entries <- c(log_entries, result)
     }
   }
-
-  if (length(log_entries) > 0) {
-    # Append to the log file
-    # Use base::file to ensure correct connection handling
+  if (length(log_entries)) {
     con <- base::file(log_file, "a")
-    tryCatch({
-      writeLines(log_entries, con)
-    }, finally = {
-      # Check if connection is valid before attempting to close
-      if (inherits(con, "connection")) {
-        # Use try(isOpen(con)) for maximum robustness in different R environments
-        is_open <- try(isOpen(con), silent = TRUE)
-        if (!inherits(is_open, "try-error") && is_open) {
-          close(con)
+    on.exit(
+      {
+        if (inherits(con, "connection")) {
+          io <- try(isOpen(con), silent = TRUE)
+          if (!inherits(io, "try-error") && io) close(con)
         }
-      }
-    })
+      },
+      add = TRUE
+    )
+    try(writeLines(log_entries, con), silent = TRUE)
   }
-
-  # The on.exit() handler will execute now, stopping the cluster.
 
   message(
     "\nFinished processing ", length(paths), " data sets.",

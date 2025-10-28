@@ -1,18 +1,16 @@
 ---
 title: "Study 1: Analysis"
-author: "Benedikt Lugauer"
 format:
   html:
     toc: true
     toc_depth: 3
+    echo: false
     code-fold: true
     theme: lumen
     self-contained: true
   pdf:
     toc: true
     toc_depth: 3
-    # Ensure you have a LaTeX distribution installed (e.g., TinyTeX)
-    latex_engine: xelatex
 execute:
   warning: false
   message: false
@@ -20,8 +18,7 @@ execute:
 
 ```{r setup}
 #| label: setup
-
-# Load necessary libraries
+# load necessary libraries
 suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
@@ -30,13 +27,12 @@ suppressPackageStartupMessages({
   library(stringr)
   library(knitr)
   library(RColorBrewer)
-  library(ggh4x) # Required for nested facets if needed
+  library(ggh4x) 
+  library(sn) 
 })
 
-
-# Define paths (assuming this notebook is in the main project directory)
-# If running interactively, ensure the working directory is set to the project root.
-# BASE_DIR <- getwd()
+# define paths
+# BASE_DIR <- getwd() # needed for interactive running
 DATA_DIR <- file.path("data")
 RES_DIR <- file.path("results")
 EXPORT_DIR <- file.path(RES_DIR, "exported_tables")
@@ -48,29 +44,90 @@ files <- list(
   design = file.path(DATA_DIR, "sim_conditions_singlelevel.rds")
 )
 
-# Check if files exist
 if (!all(file.exists(unlist(files)))) {
     stop("Missing required input files. Please ensure analysis_singlelevel.R has been run.")
 }
 ```
 
-## 1\. Introduction
+## 0. tl;dr
+
+### 0.1 Computational vs. inferential
+
+- **NG** is computationally robust across conditions (nearly all runs “Clean”); **SG** accumulates problematic diagnostics as skewness increases (especially at \(T=50\) under `strongSN` and in nearly all runs for `extremeCHI`). This is visible in the status counts and in the divergence boxplots.  
+- **Divergences != automatic invalidity.** For **SG**, coverage of the VAR dynamics $\Phi$ looks similar between “Clean” and “Problematic” runs; however, $\rho$ remains poor regardless of status. Model misspecification dominates $\rho$.
+
+### 0.2 Where NG is adequate and where it breaks
+
+- **`moderateSN` (\(\alpha=\pm 4\))**: **NG \(\approx\) SG in practice.** Biases are tiny on the displayed scales (e.g., \(\mu\) panels \(\pm 0.02\)) and coverage hovers near \(0.95\) for both models. No practical advantage for SG at this skewness level.
+
+- **`strongSN` (\(\alpha=\pm 9\))**: **SG improves \(\Phi\) modestly** (relative‑bias differences typically within \(\pm 0.1\text{–}0.3\); coverage gains are **hundredths** on a \(0.80\text{–}1.00\) axis). **\(\rho\)** is still down‑biased for both models. **SD‑Bias** magnitudes are **small** (often \(\pm 0.02\text{–}0.03\)), so “massive overconfidence” is not warranted here.
+
+- **`extremeCHI` (\(\chi^2_1\) standardized)**: **Both models are misspecified.**
+  - **\(\Phi\):** **SG** retains **small relative bias** (rows typically \(-0.3\ldots 0.1\)) and **coverage \(\sim 0.90\text{–}0.97\)** (worse at \(T=50\)), whereas **NG** is clearly worse.  
+  - **\(\rho\):** **Severe failure for both**—relative bias often \(< -1\) on a \(\rho\) RB axis spanning \(-2\ldots 0\); this implies **frequent sign flips**, not just shrinkage toward zero. Coverage can be well below \(0.9\) on a \(0.5\text{–}1.0\) axis.  
+  - **\(\mu\):** **SG shows visible bias** (\(\mu\) axes \(-0.2\ldots 0.2\)), while **NG** is near zero. **SD‑Bias** is parameter‑specific: **\(\mu\)** is **under‑dispersed** (as low as \(-0.1\) on a \(-0.10\ldots 0\) axis), **\(\Phi\)** is **slightly conservative** (about \(0\) to \(+0.03\)), and **\(\rho\)** is **under‑dispersed** (about \(-0.03\) to \(-0.05\)). These patterns align with **marginal misfit** and **PIT distortion** as the driving mechanism.
+
+### 0.3 Mechanism (reframed)
+
+- **Primary driver: PIT distortion from marginal misfit**, especially under `extremeCHI`. Changes in **\(\sigma\)** for NG are **small** (\(\approx \pm 0.025\)) and cannot explain the large \(\Phi/\rho\) distortions. The key phenomenon is **non‑uniform PIT** when the assumed marginals (Normal / Skew‑Normal) cannot reproduce true skewness and tails, leading to **attenuated—and often sign‑reversed—\(\rho\)**. Under severe misfit, **location \((\mu)\)** in SG absorbs shape error, producing the observed \(\mu\) bias.
+
+## 1. Introduction
 
 This simulation study compares the performance of two Bayesian Vector Autoregressive (VAR(1)) models: a standard Normal-Gaussian (NG) model and a flexible Skew-Normal-Gaussian (SG) model. The study investigates how these models recover the true parameters when the data generating process (DGP) exhibits varying degrees of skewness in the innovations, coupled by a Gaussian copula.
 
 ### 1.1. Data Generating Process (DGP)
 
-The underlying DGP is a bivariate VAR(1) model:
+The DGP is a bivariate VAR(1) model:
 
 $$Y_t = \mu + \Phi Y_{t-1} + \epsilon_t$$
 
-Where $Y\_t$ is a 2x1 vector of observations, $\\mu$ is the intercept vector (set to 0 in this simulation), $\\Phi$ is the 2x2 matrix of autoregressive coefficients, and $\\epsilon\_t$ is the 2x1 vector of innovations (errors).
+Where $Y_t$ is a 2x1 vector of observations, $\mu$ is the intercept vector (set to 0 in this simulation), $\Phi$ is the 2x2 matrix of autoregressive coefficients, and $\epsilon_t$ is the 2x1 vector of innovations (errors).
 
-The innovations $\\epsilon\_t = (\\epsilon\_{1,t}, \\epsilon\_{2,t})^T$ are generated such that they are standardized (Mean=0, Variance=1). The joint distribution of $\\epsilon\_t$ is modeled using a **Gaussian Copula**, parameterized by the correlation coefficient $\\rho$. This allows the dependence structure to be modeled independently of the marginal distributions $f\_i(\\epsilon\_{i,t})$. The joint density is given by Sklar's theorem:
+The innovations $\epsilon_t = (\epsilon_{1,t}, \epsilon_{2,t})^T$ are generated such that they are standardized. 
+
+::: {.callout-note}
+**Standardization of the innovations**
+We require innovations $\epsilon_t=(\epsilon_{1,t},\epsilon_{2,t})^\top$ to have $\mathbb{E}[\epsilon_{i,t}]=0$ and $\mathrm{Var}(\epsilon_{i,t})=1$ for all conditions. This is enforced in the DGP, and the fitted models are parameterized to be consistent with this convention.
+
+**Skew‑Normal marginals (DGP and SG model)**
+Let $\mathrm{SN}(\xi,\omega,\alpha)$ denote the skew‑normal with location $\xi$, scale $\omega>0$, shape $\alpha$.
+$$
+\delta \;=\; \frac{\alpha}{\sqrt{1+\alpha^2}}\,
+$$
+Moments:
+$$
+\mu_{\text{SN}}=\xi+\omega\,\delta\,\sqrt{\tfrac{2}{\pi}},\qquad
+\sigma^2_{\text{SN}}=\omega^2\Bigl(1-\tfrac{2\delta^2}{\pi}\Bigr)
+$$
+To impose mean 0 and variance 1, choose
+$$
+\omega\;=\;\biggl(1-\frac{2\delta^2}{\pi}\biggr)^{-\tfrac12},\qquad
+\xi\;=\;-\omega\,\delta\,\sqrt{\tfrac{2}{\pi}}\, 
+$$
+In the DGP (for `moderateSN` and `strongSN`), we set $\alpha\in\{\pm 4,\pm 9\}$, compute $\delta$, then pick $\omega,\xi$ via the formulas above so that draws from $\mathrm{SN}(\xi,\omega,\alpha)$ are standardized.
+
+In the SG model, we use centered parameterization that re‑expresses the SN so that the innovation has zero theoretical mean by construction. In practice, the Stan parameters are $(\delta,\omega)$ (or equivalent reparameterizations), and the implied $\xi$ is that value which centers the innovation at \(0\) (as above). This is why the SG model can not "use" $\mu$ to absorb the innovation mean $\mu$ then only captures the VAR intercept, not marginal shape.
+
+**Chi‑squared marginals (DGP and NG/SG models)**
+For $\chi^2_\nu$: $\mathbb{E}= \nu$, $\mathrm{Var}=2\nu$, skewness $\gamma_1=\sqrt{\tfrac{8}{\nu}}$, excess kurtosis $\gamma_2=\tfrac{12}{\nu}$.
+In the DGP (for `extremeCHI`), we standardize after simulating: if $X\sim\chi^2_1$, set
+$$
+Z=\frac{X-1}{\sqrt{2}},\qquad \text{and (optionally) mirror as } -Z \text{ for left skew.}
+$$
+Thus $Z$ has mean $0$ and variance $1$ but remains skewed ($\gamma_1\approx 2.83$) and heavy‑tailed ($\gamma_2=12$).
+In the NG model, innovations are Gaussian with scale $\sigma$. Because the data are standardized, the truth is $\sigma=1$; deviations from 1 arise from misspecification.
+
+In the SG model, innovations remain skew‑normal with zero‑mean by construction, using $(\delta,\omega)$. Under a $\chi^2$ DGP this implies misspecified marginals; the parameter $\alpha$ adjusts shape flexibly but cannot match $\chi^2_1$ skewness.
+:::
+
+The joint distribution of $\epsilon_t$ is modeled using a Gaussian Copula, parameterized by the correlation coefficient $\rho$. This allows the dependence structure to be modeled independently of the marginal distributions $f_i(\epsilon_{i,t})$. The joint density is given by Sklar's theorem:
 
 $$f(\epsilon_{1,t}, \epsilon_{2,t}) = c(u_{1,t}, u_{2,t}; \rho) \cdot f_1(\epsilon_{1,t}) \cdot f_2(\epsilon_{2,t})$$
+$$
+f(\epsilon_{1,t}, \epsilon_{2,t}) = \underbrace{c_{\text{Gauss}}(F_1(\epsilon_{1,t}), F_2(\epsilon_{2,t}); \rho)}_{\text{Dependence Structure}} \cdot \underbrace{\frac{2}{\omega_1} \phi\left(\frac{\epsilon_{1,t}-\xi_1}{\omega_1}\right) \Phi\left(\alpha_1 \frac{\epsilon_{1,t}-\xi_1}{\omega_1}\right)}_{\text{Marginal Density for } \epsilon_1} \cdot \underbrace{\frac{2}{\omega_2} \phi\left(\frac{\epsilon_{2,t}-\xi_2}{\omega_2}\right) \Phi\left(\alpha_2 \frac{\epsilon_{2,t}-\xi_2}{\omega_2}\right)}_{\text{Marginal Density for } \epsilon_2}
+$$
 
-The marginal distributions $f\_i$ are varied to introduce different levels and types of skewness.
+The marginal distributions $f_i$ are varied to introduce different levels and types of skewness.
 
 ### 1.2. Simulation Design
 
@@ -80,7 +137,6 @@ The study employs a full factorial design crossing five factors, resulting in 10
 #| label: design_table
 #| echo: false
 
-# Define the levels for the table manually for clarity
 # NOTE: Double backslashes (\\) are required here because this is inside an R string 
 # that will be interpreted as LaTeX by kable(escape=FALSE).
 design_summary <- tibble(
@@ -106,40 +162,97 @@ design_summary <- tibble(
 kable(design_summary, caption = "Summary of the Simulation Design Factors.", escape = FALSE)
 ```
 
-## 2\. Data Loading and Preparation
+
+### 1.3 Visual check: standardized marginal innovations (DGP)
+
+```{r dgp_marginal_distributions, fig.width=10, fig.height=10}
+# SN parameters that enforce mean 0 and var 1 for a given alpha
+sn_params <- function(alpha) {
+  delta <- alpha / sqrt(1 + alpha^2)
+  omega <- sqrt(1 / (1 - 2 * delta^2 / pi))       # Var = 1
+  xi    <- -omega * delta * sqrt(2 / pi)          # Mean = 0
+  list(xi = xi, omega = omega, alpha = alpha)
+}
+
+set.seed(2025)
+
+# standardized chi-square draws (df = 1), both right-skewed and mirrored
+rchisq_std <- function(n, df = 1, mirror = FALSE) {
+  x  <- stats::rchisq(n, df = df)
+  z  <- (x - df) / sqrt(2 * df)  # mean 0, var 1
+  if (mirror) -z else z
+}
+
+# 20k draws per margin
+draws <- list(
+  "SN  alpha = +4"              = sn::rsn(20000, xi = sn_params(+4)$xi, omega = sn_params(+4)$omega, alpha = +4),
+  "SN  alpha = -4"              = sn::rsn(20000, xi = sn_params(-4)$xi, omega = sn_params(-4)$omega, alpha = -4),
+  "SN  alpha = +9"              = sn::rsn(20000, xi = sn_params(+9)$xi, omega = sn_params(+9)$omega, alpha = +9),
+  "SN  alpha = -9"              = sn::rsn(20000, xi = sn_params(-9)$xi, omega = sn_params(-9)$omega, alpha = -9),
+  "χ² df=1 (std., right)"       = rchisq_std(20000, df = 1, mirror = FALSE),
+  "χ² df=1 (std., mirrored)"    = rchisq_std(20000, df = 1, mirror = TRUE)
+)
+
+df_m <- dplyr::bind_rows(lapply(names(draws), function(nm) {
+  tibble::tibble(value = draws[[nm]], dist = nm)
+}))
+
+# palette
+pal <- c("SN  alpha = +4"           = "#1b9e77",
+         "SN  alpha = -4"           = "#1b9e77",
+         "SN  alpha = +9"           = "#d95f02",
+         "SN  alpha = -9"           = "#d95f02",
+         "χ² df=1 (std., right)"    = "#7570b3",
+         "χ² df=1 (std., mirrored)" = "#7570b3")
+
+ggplot(df_m, aes(value)) +
+  geom_histogram(aes(y = after_stat(density), fill = dist),
+                 bins = 60, alpha = 0.25, colour = NA) +
+  geom_density(aes(colour = dist), linewidth = 0.8) +
+  # N(0,1) reference
+  stat_function(fun = dnorm, linewidth = 0.7, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  scale_fill_manual(values = pal, guide = "none") +
+  scale_colour_manual(values = pal, name = "") +
+  facet_wrap(~ dist, scales = "free", ncol = 2) +
+  theme_bw(base_size = 10) +
+  labs(title = "Standardized marginal innovations used in the DGP",
+       x = "value", y = "density")
+```
+
+## 2. Data Loading and Preparation
 
 ```{r load_data}
 #| label: load_data
 
-# Load the design grid
+# load the design grid
 design <- readRDS(files$design) |>
   select(condition_id, skew_level, direction, T, rho, VARset)
 
-# Load condition-level summary (aggregated metrics)
+# load condition-level summary (aggregated metrics)
 cond_raw <- read_csv(files$cond, show_col_types = FALSE) |>
   left_join(design, by = "condition_id")
 
-# Load replication-level summary (individual runs)
+# load replication-level summary (individual runs)
 rep_raw <- read_csv(files$rep, show_col_types = FALSE) |>
     filter(!is.na(param)) |> # Filter out completely failed fits
     left_join(design, by = "condition_id")
 
 
-# Define parameter order and groups
+# define parameter order and groups
 param_levels <- c("omega[1]","omega[2]","alpha[1]","alpha[2]",
                   "sigma[1]","sigma[2]",
                   "mu[1]","mu[2]",
                   "phi11","phi12","phi21","phi22","rho")
 
-# Apply factor levels and clearer labels
+# apply factor levels and clearer labels
 prep_data <- function(df) {
   df |>
     mutate(param = factor(param, levels = param_levels),
            T = factor(T),
-           # Ensure informative labels for facets and correct ordering
            skew_level = factor(skew_level, levels = c("moderateSN", "strongSN", "extremeCHI")),
-           rho_val = rho, # Keep numeric rho
-           VARset_val = VARset, # Keep character VARset
+           rho_val = rho, # keep numeric rho
+           VARset_val = VARset, # keep character VARset
            # MODIFIED: Removed manual prefixes (e.g., "VARset:"). 
            # We rely on ggplot's labeller=label_both used later.
            rho = factor(rho, labels = sort(unique(df$rho))),
@@ -152,22 +265,23 @@ cond <- prep_data(cond_raw)
 rep_df <- prep_data(rep_raw)
 
 
-# Calculate Root Mean Squared Error (RMSE)
-# RMSE = sqrt(Bias^2 + Empirical_SD^2) - provides overall accuracy measure
 cond <- cond |>
   mutate(
-    # Use coalesce to handle NA emp_sd if N_valid < 2
+    # use coalesce to handle NA emp_sd if N_valid < 2
     RMSE = sqrt(mean_bias^2 + coalesce(emp_sd^2, 0))
   )
 
 
-# Separate core parameters (VAR dynamics, intercepts, correlation)
+# separate core parameters (VAR dynamics, intercepts, correlation)
 core_params <- c("mu[1]","mu[2]", "phi11","phi12","phi21","phi22","rho")
 ```
 
 ### 2.1. MCMC Classification and Overview
 
-We classify runs based on MCMC diagnostics (R-hat and divergent transitions `n_div`) and summarize the computational performance.
+We classify runs based on MCMC diagnostics (R-hat and divergent transitions `n_div`) and summarize the computational performance. A replication run was deemed as "Problematic" if it successfully completed sampling but exhibited either of the following conditions:
+
+- High R-hat: The potential scale reduction factor (`max_rhat`) for any parameter was greater than 1.01.
+- Divergent Transitions: The sampler reported one or more divergent transitions (`n_div > 0`) after warmup.
 
 ```{r classify_mcmc}
 #| label: classify_mcmc
@@ -178,7 +292,7 @@ rep_df <- rep_df |>
   mutate(
     mcmc_status = case_when(
       is.na(max_rhat) | status != "ok" ~ "Failed/Error",
-      # Classification based on Rhat and divergent transitions (n_div)
+      # classification based on Rhat and divergent transitions (n_div)
       max_rhat > RHAT_THRESHOLD | n_div > 0 ~ "Problematic",
       TRUE ~ "Clean"
     ),
@@ -203,57 +317,55 @@ ggplot(mcmc_summary, aes(x = T, y = Count, fill = mcmc_status)) +
   scale_fill_manual(values = c("Clean" = "#4daf4a", "Problematic" = "#ff7f00", "Failed/Error" = "#e41a1c"))
 ```
 
-**Interpretation: MCMC Status Counts**
-The computational performance shows a stark contrast between the models. The NG model is extremely stable, achieving a "Clean" MCMC status in virtually 100% of replications across all conditions. This stability holds even when the model is statistically misspecified. In contrast, the SG model exhibits significant computational fragility that increases with the skewness of the Data Generating Process (DGP). Under `moderateSN`, the SG model performs reasonably well, but under `strongSN`, a substantial portion of runs become "Problematic," especially at T=50. The `extremeCHI` condition (Chi-Squared DGP) causes severe difficulties for the SG model, resulting in nearly 100% "Problematic" runs, likely due to the difficulty of approximating the Chi-Squared DGP (model misspecification) and the resulting complex posterior geometry.
+**Interpretation:**
+The NG model is stable with a "Clean" MCMC status in 100% of replications across all conditions. This stability holds even when the model is statistically misspecified. In contrast, the SG model exhibits computational instability that increases with the skewness of the Data Generating Process (DGP). Under `moderateSN`, the SG model performs reasonably well, but under `strongSN`, a substantial portion of runs become "Problematic", especially at $T=50$. The `extremeCHI` condition (Chi-Squared DGP) causes severe difficulties for the SG model, resulting in nearly 100% "Problematic" runs.
 
 ```{r divergence_overview, fig.height=9, fig.width=16}
 #| label: divergence_overview
 
 # MCMC Overview Plot (Distribution of Divergent Transitions)
-# We use the replication level data (rep_df) to see the distribution of n_div across individual runs.
+# we use the replication level data (rep_df) to see the distribution of n_div across individual runs.
 
 div_dist_data <- rep_df |>
-    # Ensure we only look at the diagnostics once per replication run (n_div is the same for all params in a run)
-    # We filter by one parameter (e.g., rho) to get unique runs, ensuring we have the n_div value for that run.
+    # ensure we only look at the diagnostics once per replication run (n_div is the same for all params in a run)
+    # we filter by one parameter (e.g., rho) to get unique runs, ensuring we have the n_div value for that run.
     filter(param == "rho") |>
     distinct(condition_id, rep_id, Model, T, skew_level, n_div, mcmc_status) |>
-    # Exclude runs that failed entirely before sampling (if any)
+    # exclude runs that failed entirely before sampling (if any)
     filter(mcmc_status != "Failed/Error")
 
 ggplot(div_dist_data, aes(x = T, y = n_div, fill = Model)) +
-  # Boxplot showing the distribution of divergences per condition
-  # We hide default outliers as we will show them with jitter
+  # boxplot showing the distribution of divergences per condition
+  # we hide default outliers as we will show them with jitter
   geom_boxplot(outlier.shape = NA, alpha = 0.6, position = position_dodge(width = 0.8)) +
-  # Jitter points to show individual runs; this helps visualize the density and outliers
+  # jitter points to show individual runs; this helps visualize the density and outliers
   # position_jitterdodge allows jittering within the dodged groups (Models)
   geom_point(size = 1.5, alpha = 0.4, position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)) +
   facet_grid(Model ~ skew_level) +
   theme_bw(base_size = 14) +
-  # Note: A log1p scale (log(y+1)) might be necessary if the distribution is highly skewed with very large outliers
+  # log1p scale (log(y+1)) might be better if the distribution is highly skewed with very large outliers
   # scale_y_continuous(trans = 'log1p', breaks = c(0, 5, 50, 200)) + 
   labs(title = "Distribution of Divergent Transitions (Post-Warmup) per Replication",
        y = "Count of Divergences (n_div)",
        x = "Time Points (T)")
 ```
 
-**Interpretation: Divergent Transitions**
-The boxplots confirm the pattern seen in the status counts. The NG model exhibits virtually zero divergent transitions across all conditions. The SG model, however, shows a significant number of divergences, particularly under `strongSN` and `extremeCHI`. The distribution is highly skewed, with many runs having few divergences, but a substantial number having dozens or hundreds, indicating severe sampling difficulties in those specific replications.
+**Interpretation:**
+The boxplots confirm the pattern seen in the status counts. The NG model exhibits zero divergent transitions across all conditions. The SG model, however, shows a significant number of divergences, particularly under `strongSN` and `extremeCHI`. The distribution is highly skewed, with many runs having few divergences, but a substantial number having dozens or hundreds, indicating severe sampling difficulties in those specific replications. The SG model performs better in the SN DGP conditions as T increases, but worse in the misspecified condition. 
 
-## 3\. Analysis Helpers
-
-To systematically analyze the results, we define helper functions for the standard plots (Bias, Coverage, SD-Bias, RMSE, Posterior SD).
+## 3. Helpers
 
 ```{r analysis_helpers}
 #| label: analysis_helpers
 
-# Standardized visualization settings
-theme_standard <- theme_bw(base_size = 14) # Increase base font size
+# standardized visualization settings
+theme_standard <- theme_bw(base_size = 14) # to increase base font size
 dodge_width <- 0.3
 
-# Helper function for plotting metrics across conditions
+# helper function for plotting metrics across conditions
 plot_metric <- function(data, metric_col, ylab, title, use_free_y = FALSE, ylims = NULL) {
   
-  # Filter out potential NAs (e.g. if N_truth_avail = 0)
+  # filter out potential NAs (e.g. if N_truth_avail = 0)
   data_filtered <- data |> filter(!is.na(.data[[metric_col]]))
   
   if (nrow(data_filtered) == 0) {
@@ -269,14 +381,14 @@ plot_metric <- function(data, metric_col, ylab, title, use_free_y = FALSE, ylims
     theme_standard +
     labs(title = title, y = ylab, x = "Time Points (T)")
   
-  # Add reference lines based on the metric
+  # add reference lines based on the metric
   if (metric_col %in% c("mean_rel_bias", "sd_bias")) {
     p <- p + geom_hline(yintercept = 0, linetype = "dashed", color = "darkgrey")
   } else if (metric_col == "coverage_95") {
     p <- p + geom_hline(yintercept = 0.95, linetype = "dashed", color = "darkgrey")
   }
   
-  # Apply custom Y-axis limits if provided
+  # apply custom Y-axis limits if provided
   if (!is.null(ylims)) {
     p <- p + coord_cartesian(ylim = ylims)
   }
@@ -284,7 +396,7 @@ plot_metric <- function(data, metric_col, ylab, title, use_free_y = FALSE, ylims
   return(p)
 }
 
-# Wrapper to filter data and call the plotting function for a specific skew level
+# wrapper to filter data and call the plotting function for a specific skew level
 generate_plots_for_condition <- function(skew_lvl) {
   data_subset <- cond |>
     filter(skew_level == skew_lvl, param %in% core_params)
@@ -306,16 +418,15 @@ generate_plots_for_condition <- function(skew_lvl) {
     post_sd = plot_metric(data_subset, "mean_post_sd", "Mean Posterior SD", 
                           paste("Mean Posterior SD (DGP:", skew_lvl, ")"), use_free_y = TRUE),
     # Metric: SD-Bias (Calibration of Uncertainty)
-    sdbias = plot_metric(data_subset, "sd_bias", "SD-Bias (Negative=Overconfident)", 
+    sdbias = plot_metric(data_subset, "sd_bias", "SD-Bias", 
                          paste("SD-Bias (DGP:", skew_lvl, ")"), use_free_y = TRUE)
   )
 }
-
 ```
 
-## 4\. Condition 1: Moderate Skewness (moderateSN)
+## 4. Condition 1: Moderate Skewness (moderateSN)
 
-DGP: Skew-Normal innovations ($\\alpha=4$). NG model is misspecified; SG model is correctly specified.
+DGP: Skew-Normal innovations ($\alpha=4$). NG model is misspecified; SG model is correctly specified.
 
 ```{r moderateSN_plots, results="hide"}
 #| label: moderateSN_plots
@@ -325,32 +436,32 @@ plots_mod <- generate_plots_for_condition("moderateSN")
 
 ### 4.1. Relative Bias (moderateSN)
 
-```{r moderateSN_bias, fig.height=12, fig.width=16}
+```{r moderateSN_bias, fig.height=16, fig.width=16}
 #| label: moderateSN_bias
 print(plots_mod$bias)
 ```
 
 ### 4.2. 95% Coverage (moderateSN)
 
-```{r moderateSN_coverage, fig.height=12, fig.width=16}
+```{r moderateSN_coverage, fig.height=16, fig.width=16}
 #| label: moderateSN_coverage
 print(plots_mod$coverage)
 ```
 
 ### 4.3. SD-Bias (moderateSN)
 
-```{r moderateSN_sdbias, fig.height=12, fig.width=16}
+```{r moderateSN_sdbias, fig.height=16, fig.width=16}
 #| label: moderateSN_sdbias
 # Note: RMSE and Mean Posterior SD plots are omitted for brevity, focusing on Bias, Coverage, and SD-Bias.
 print(plots_mod$sdbias)
 ```
 
 **Interpretation (moderateSN):**
-Under moderate skewness, both models perform reasonably well. The SG model is accurate, with bias near zero and coverage near the nominal 0.95 rate. The NG model shows slight biases, particularly a minor underestimation of $\\rho$ and some attenuation (bias toward zero) in the $\\Phi$ parameters. The NG model also exhibits slight negative SD-Bias (overconfidence) leading to minor undercoverage for $\\rho$. Overall, the NG model appears relatively robust to this moderate departure from normality.
+Under moderate skewness, the performance of the misspecified NG model is indistinguishable from the correctly specified SG model. Both models exhibit negligible bias and maintain coverage near the nominal 95% rate for all parameters. The SD-Bias is near zero for both models. The implication is the robustness of the standard Gaussian assumption to mild violations. When departures from normality are moderate, the added complexity and computational cost of the SG model provide no discernible statistical advantage.
 
-## 5\. Condition 2: Strong Skewness (strongSN)
+## 5. Condition 2: Strong Skewness (strongSN)
 
-DGP: Skew-Normal innovations ($\\alpha=9$). The misspecification for the NG model is severe.
+DGP: Skew-Normal innovations ($\alpha=9$). The misspecification for the NG model is severe.
 
 ```{r strongSN_plots, results="hide"}
 #| label: strongSN_plots
@@ -379,11 +490,11 @@ print(plots_strong$sdbias)
 ```
 
 **Interpretation (strongSN):**
-The performance gap widens significantly. The NG model's biases become substantial. The underestimation of $\\rho$ and the attenuation of $\\Phi$ are more pronounced than in the moderate condition. The SG model remains accurate and well-calibrated. The NG model's SD-Bias is clearly negative, confirming systematic overconfidence, which explains why its coverage drops noticeably below 0.95, especially for the dependence parameter $\\rho$.
 
-## 6\. Condition 3: Extreme Skewness and Misspecification (extremeCHI)
 
-DGP: Standardized Chi-Squared (df=1) innovations. Highly skewed. Both models are misspecified, but SG is more flexible.
+## 6. Condition 3: Extreme Skewness and Misspecification (extremeCHI)
+
+DGP: Standardized Chi-Squared (df=1) innovations. Highly skewed. Both models are misspecified, but flexibility of the SG model should in theory achieve better results.
 
 ```{r extremeCHI_plots, results="hide"}
 #| label: extremeCHI_plots
@@ -396,6 +507,62 @@ plots_extreme <- generate_plots_for_condition("extremeCHI")
 #| label: extremeCHI_bias
 print(plots_extreme$bias)
 ```
+
+#### Interpetation: High Bias for SN Model in intercepts ($\mu_1$, $\mu_2$)
+
+In the `extremeCHI` condition is the substantial bias in the intercepts ($\mu$) for the SG model, while the NG model remains unbiased for $\mu$. 
+
+  * **Why NG is unbiased for $\mu$:** The NG model assumes symmetric (Normal) innovations. Estimators for the intercept are generally robust to distributional violations as long as the errors have a mean of zero (which they do in our dgp). The NG model cannot improve the fit by shifting $\mu$; instead, it distorts $\Phi$ and $\rho$.
+  * **Why SG is biased for $\mu$:** This bias stems from the Centered Parameterization (CP) used in the SG model implementation. The CP stabilizes MCMC but imposes a constraint: the estimated Skew-Normal innovations must have a theoretical mean of zero. When the SG model tries to fit the highly irregular Chi-Squared data, it struggles. The Skew-Normal shape is a poor fit for the Chi-Squared shape. To reconcile the data with this poorly fitting shape *and* the zero-mean constraint, the model compensates by shifting the intercept $\mu$. By biasing $\mu$ (e.g., positively), the calculated residuals ($\epsilon_t = Y_t - \text{prediction}$) are shifted (e.g., negatively), allowing them to achieve a higher likelihood under the constrained Skew-Normal distribution.
+
+The SG model sacrifices the intercept ($\mu$) to compensate for the imperfect fit between the assumed and true shapes under the constraints of the CP, thereby protecting the accuracy of the dynamics ($\Phi$) and dependence ($\rho$).
+
+::: {.callout-note}
+The `extremeCHI` condition uses standardized Chi-squared innovations with 1 degree of freedom ($\chi^2(1)$). The mismatch between this DGP and the model assumptions is strong:
+
+| Distribution | Theoretical Skewness | Theoretical Excess Kurtosis |
+| :--- | :---: | :---: |
+| **True DGP ($\chi^2(1)$)** | $\approx 2.83$ | 12 |
+| NG Model (Normal) | 0 | 0 |
+| SG Model (Skew-Normal Max) | $\approx 0.995$ | $\approx 0.869$ |
+:::
+
+::: {.callout-note}
+**Skewness and kurtosis formulas**
+
+- **Chi‑squared** \(\chi^2_\nu\):  
+  \(\mathbb{E}=\nu,\quad \mathrm{Var}=2\nu,\quad \gamma_1=\sqrt{\tfrac{8}{\nu}},\quad \gamma_2=\tfrac{12}{\nu}\) (excess).  
+  For \(\nu=1\): \(\gamma_1\approx 2.828\), \(\gamma_2=12\).
+
+- **Skew‑normal** \(\mathrm{SN}(\xi,\omega,\alpha)\): with \(\delta=\alpha/\sqrt{1+\alpha^2}\),  
+  \[
+  \mu=\xi+\omega\,\delta\,\sqrt{\tfrac{2}{\pi}},\quad
+  \sigma^2=\omega^2\Bigl(1-\tfrac{2\delta^2}{\pi}\Bigr),
+  \]
+  \[
+  \gamma_1
+  = \frac{(4-\pi)}{2}\;
+    \frac{\bigl(\delta\sqrt{\tfrac{2}{\pi}}\bigr)^3}{\bigl(1-\tfrac{2\delta^2}{\pi}\bigr)^{3/2}},\qquad
+  \gamma_2
+  = 2(\pi-3)\;
+    \frac{\bigl(\delta\sqrt{\tfrac{2}{\pi}}\bigr)^4}{\bigl(1-\tfrac{2\delta^2}{\pi}\bigr)^{2}} .
+  \]
+  As \(|\alpha|\to\infty\) (i.e., \(|\delta|\to 1\)), the **maximum skewness** is \(\gamma_1\approx 0.995\) and the **maximum excess kurtosis** is \(\gamma_2\approx 0.869\). This is the basis for the entries in the table contrasting \(\chi^2_1\) vs. Normal vs. Skew‑Normal. 
+:::
+
+**Why PIT failure happens (intuition).** The PIT maps each margin \(Y\) to \(U=F_{\text{assumed}}(Y)\). If \(F_{\text{assumed}}=F_{\text{true}}\), then \(U\sim\mathrm{Uniform}(0,1)\). Under misspecification:
+- **Tail compression:** If the true data have **heavier right tails** (e.g., \(\chi^2_1\)) than the assumed SN/Normal, then very large \(Y\) values **do not land near 1** after transformation; they are pulled back toward the center (e.g., \(U\approx 0.8\) instead of \(0.98\)). Left tails are similarly distorted under mirroring.
+- **Rank distortion:** The PIT is a *ranking* device. By compressing real extremes toward the middle, **co‑extreme** events \((Y_1,Y_2)\) that truly move together in the tails no longer co‑locate in the **corners** of \([0,1]^2\); instead they fall into the **interior**.
+
+For Gaussian copulas, dependence is most visible in the **corners**. When misspecified marginals push mass away from corners, the copula “sees” less tail co‑movement even if it exists in the data, and any fitted \(\rho\) is forced downward. This is exactly what the \(\rho\) relative‑bias panels show on a \([-2,0]\) y‑axis (pp. 18–19). :contentReference[oaicite:4]{index=4}
+
+**Why \(\rho\) is pushed toward zero (attenuation).** The joint likelihood factorizes as
+\[
+\prod_t c\bigl(U_{1,t},U_{2,t};\rho\bigr)\, f_1(y_{1,t})\, f_2(y_{2,t}),
+\]
+so only the **copula term** \(c(\cdot\,;\rho)\) can adjust dependence. When the PIT pushes tail pairs \((U_{1,t},U_{2,t})\) **toward the center** \((\approx 0.5,0.5)\), the **Gaussian copula density** becomes less sensitive to \(\rho\) (the score in \(\rho\) flattens). To avoid penalizing improbable tail corners that the distorted \((U_1,U_2)\) no longer occupy, the MLE/posterior moves \(\rho\) **down toward 0**. Hence the **large negative relative bias** and **sub‑nominal coverage** for \(\rho\) in `extremeCHI` (pp. 19–21), regardless of “Clean” or “Problematic” MCMC status. :contentReference[oaicite:5]{index=5}
+
+
 
 ### 6.2. 95% Coverage (extremeCHI)
 
@@ -412,28 +579,25 @@ print(plots_extreme$sdbias)
 ```
 
 **Interpretation (extremeCHI):**
-The NG model fails catastrophically. The relative bias for $\\rho$ is extreme (often exceeding -1.0), indicating the model estimates the correlation to be near zero or even negative, despite the true positive correlation. Attenuation bias in $\\Phi$ is severe. Consequently, coverage is very poor.
+This condition serves as a stress test, showing low performance in the NG model and some limitations in the SG model.
 
-The SG model demonstrates remarkable resilience in estimating the dynamics ($\\Phi$) and dependence ($\\rho$), maintaining low bias and good coverage for these parameters despite being technically misspecified and facing severe MCMC issues.
+NG Model Failure: The NG model fails completely. It exhibits extreme bias across $\Phi$ and $\rho$.
 
-#### The Paradoxical Bias in the Intercept ($\\mu$)
+SG Model Resilience: The SG model demonstrates significant resilience in estimating the VAR dynamics $\Phi$, maintaining relatively low bias and good coverage. This suggests that the flexibility of the SG model, even when misspecified, helps mitigate the severe distortions seen in the NG model.
 
-A striking observation in the `extremeCHI` condition is the substantial bias in the intercepts ($\\mu$) for the SG model, while the NG model remains virtually unbiased for $\\mu$. This seems paradoxical, as the SG model is generally superior.
+Joint Failure (Dependence $\rho$): Both models fail severely in recovering the dependence parameter $\rho$, exhibiting extreme negative bias (often near or exceeding -1.0). The extreme mismatch between the assumed marginal distributions (Normal or Skew-Normal) and the true DGP (Chi-Squared) leads to a failure of the Probability Integral Transform (PIT). This distortion systematically biases the estimation of the copula parameter downwards (attenuation bias).
 
-  * **Why NG is unbiased for $\\mu$:** The NG model assumes symmetric (Normal) innovations. Estimators for the intercept are generally robust to distributional violations as long as the errors have a mean of zero (which they do). The NG model cannot improve the fit by shifting $\\mu$; instead, it distorts $\\Phi$ and $\\rho$.
-  * **Why SG is biased for $\\mu$:** This bias stems from the **Centered Parameterization (CP)** used in the SG model implementation. The CP stabilizes MCMC but imposes a strict constraint: the estimated Skew-Normal innovations *must* have a theoretical mean of zero. When the SG model tries to fit the highly irregular Chi-Squared data, it struggles. The Skew-Normal shape is a poor fit for the Chi-Squared shape. To reconcile the data with this poorly fitting shape *and* the zero-mean constraint, the model compensates by shifting the intercept $\\mu$. By biasing $\\mu$ (e.g., positively), the calculated residuals ($\\epsilon\_t = Y\_t - \\text{prediction}$) are shifted (e.g., negatively), allowing them to achieve a higher likelihood under the constrained Skew-Normal distribution.
+The Intercept Trade-off (Intercept $\mu$): The SG model exhibits large biases in the intercepts, while the NG model remains unbiased for $\mu$. This occurs because the SG model implementation (Centered Parameterization) enforces a zero-mean constraint on the innovations. To compensate for the poor fit between the assumed Skew-Normal shape and the true Chi-Squared data, the model sacrifices the intercept, shifting $\mu$ to maximize the likelihood under these constraints.
 
-In essence, the SG model sacrifices the intercept ($\\mu$) to compensate for the imperfect fit between the assumed and true shapes under the constraints of the CP, thereby protecting the accuracy of the dynamics ($\\Phi$) and dependence ($\\rho$).
-
-## 7\. Cross-Condition Synthesis: Marginal Parameters
+## 7. Cross-Condition Synthesis: Marginal Parameters
 
 We examine the parameters governing the marginal distributions to understand the mechanisms driving the results.
 
-### 7.1. The Mechanism of Failure: NG Variance Inflation ($\\sigma$)
+### 7.1. The Mechanism of Failure: NG Variance Inflation ($\sigma$)
 
-The simulated data is standardized (Variance=1). The NG model should recover $\\sigma=1$.
+The simulated data is standardized (Variance=1). The NG model should recover $\sigma=1$.
 
-```{r ng_sigma_inflation, fig.height=12, fig.width=16}
+```{r ng_sigma_inflation, fig.height=8, fig.width=16}
 #| label: ng_sigma_inflation
 
 sigma_data <- cond |>
@@ -452,14 +616,14 @@ ggplot(sigma_data, aes(x = T, y = mean_bias, color = skew_level, group = skew_le
        color = "DGP Skew Level")
 ```
 
-**Interpretation: Variance Inflation/Deflation**
-The NG model's estimation of $\\sigma$ reveals how it handles misspecification. In the Skew-Normal conditions (`moderateSN`, `strongSN`), the NG model tends to slightly *overestimate* $\\sigma$ (positive bias). It misinterprets some of the skewness as excess variance. However, in the `extremeCHI` condition, the bias is significantly negative (variance deflation). Regardless of the direction, the misspecification of the marginal distribution leads to incorrect estimates of variance, which is a primary mechanism contributing to the attenuation bias observed in the $\\Phi$ parameters (the model compensates for incorrect innovation variance by adjusting the dynamics).
+**Interpretation:** The \(\sigma\) bias under NG is **small** (about \(\pm 0.025\) on a tight y‑axis; see p. 23), so it **cannot** by itself explain the large distortions in \(\rho\) and (to a lesser extent) \(\Phi\) under `extremeCHI`. It is better viewed as a **by‑product** of marginal misspecification (some skewness/heavy tails leaking into scale), whereas the **dominant mechanism** behind \(\rho\) failure is the **PIT distortion** described above. :contentReference[oaicite:6]{index=6}
 
-### 7.2. The Mechanism of Success: SG Shape Recovery ($\\alpha$)
 
-We examine how well the SG model recovers the true shape parameter $\\alpha$ (applicable for SN conditions).
+### 7.2. The Mechanism of Success: SG Shape Recovery ($\alpha$)
 
-```{r sg_alpha_recovery, fig.height=12, fig.width=16}
+We examine how well the SG model recovers the true shape parameter $\alpha$ (applicable for SN conditions).
+
+```{r sg_alpha_recovery, fig.height=8, fig.width=16}
 #| label: sg_alpha_recovery
 
 alpha_data <- cond |>
@@ -485,7 +649,12 @@ if (nrow(alpha_data) > 0) {
 ```
 
 **Interpretation: Shape Recovery**
-The SG model shows substantial bias in recovering the shape parameters ($\\alpha$) at low T (T=50), often underestimating the magnitude of the skewness. However, the bias rapidly diminishes as T increases. Despite the difficulty in precisely estimating $\\alpha$, the mere inclusion of the shape parameter allows the SG model to capture the non-Gaussian features sufficiently to avoid the severe biases in $\\Phi$ and $\\rho$ seen in the NG model.
+The SG model shows substantial bias in recovering the shape parameters ($\alpha$) at low T (T=50), often underestimating the magnitude of the skewness. However, the bias rapidly diminishes as T increases. Despite the difficulty in precisely estimating $\alpha$, the mere inclusion of the shape parameter allows the SG model to capture the non-Gaussian features sufficiently to avoid the severe biases in $\Phi$ and $\rho$ seen in the NG model.
+
+**Why biased \(\alpha\) can still help.** Two reasons:
+1. **Right direction of shape.** Even if \(\alpha\) is biased at \(T=50\), introducing a **shape degree of freedom** lets the SG model partially align the PIT with the data—enough to keep \(\Phi\) bias small and coverage near nominal in `moderateSN/strongSN` and more stable than NG in `extremeCHI`.
+2. **Identification improves with \(T\).** The \(\alpha\) panels (p. 24) show bias shrinking as \(T\) grows, consistent with increasing information about asymmetry. This is mirrored by improving \(\Phi\) coverage for SG as \(T\) increases in the SN DGPs (pp. 15–16). :contentReference[oaicite:7]{index=7}
+
 
 ## 8\. Impact of MCMC Diagnostics
 
@@ -526,7 +695,7 @@ cond_status <- aggregate_by_status(rep_df)
 
 We visualize the coverage across all three conditions, comparing Clean vs. Problematic runs.
 
-```{r coverage_status_split, fig.height=12, fig.width=16}
+```{r coverage_status_split, fig.height=8, fig.width=16}
 #| label: coverage_status_split
 
 status_comparison_data <- cond_status |>
@@ -556,7 +725,7 @@ ggplot(status_overview,
 ```
 
 **Interpretation: Impact of MCMC Status**
-A crucial insight is the robustness of the SG model's inference to its MCMC issues. The statistical performance (coverage) of the SG model is remarkably similar between "Clean" and "Problematic" runs across all conditions. Even in the `extremeCHI` condition, where nearly all runs were problematic, coverage remains close to the nominal rate for the dynamic parameters (though coverage for $\\mu$ is poor due to the bias discussed in Section 6). This suggests that while the sampler encountered difficulties (e.g., divergences), the resulting posterior draws still provided valid statistical inference for the core VAR dynamics in this study.
+A crucial insight is the robustness of the SG model's inference to its MCMC issues. The statistical performance (coverage) of the SG model is remarkably similar between "Clean" and "Problematic" runs across all conditions. Even in the `extremeCHI` condition, where nearly all runs were problematic, coverage remains close to the nominal rate for the dynamic parameters (though coverage for $\mu$ is poor due to the bias discussed in Section 6). This suggests that while the sampler encountered difficulties (e.g., divergences), the resulting posterior draws still provided valid statistical inference for the core VAR dynamics in this study.
 
 ### 8.2. Relationship between Bias and Divergences
 
@@ -587,16 +756,7 @@ ggplot(div_bias_data, aes(x = n_div, y = abs(bias))) +
 **Interpretation: Bias vs. Divergences**
 There does not appear to be a strong correlation between the number of divergences and the absolute bias for the core parameters. High bias occurs in runs with few divergences, and low bias occurs in runs with many divergences. This reinforces the conclusion that MCMC diagnostics, while important indicators of computational issues, are not reliable predictors of statistical accuracy in this context.
 
-## 9\. Conclusion
-
-The simulation study strongly supports the use of the Skew-Normal Gaussian Copula (SG) model when analyzing time series data suspected of having non-Gaussian innovations.
-
-1.  **NG Model Failure:** Relying on the standard Gaussian (NG) model in the presence of skewness leads to severe and systematic distortions, particularly the underestimation of dependence ($\\rho$) and the attenuation of dynamics ($\\Phi$).
-2.  **SG Model Superiority:** The SG model consistently provides superior statistical inference, lower bias, and better uncertainty calibration for the dynamic and dependence parameters.
-3.  **The Intercept Trade-off:** Under extreme misspecification (`extremeCHI`), the SG model may exhibit bias in the intercept ($\\mu$) as a mechanism to compensate for the constraints of the Centered Parameterization, prioritizing the accurate estimation of dynamics and dependence.
-4.  **Computational Trade-off:** The flexibility of the SG model comes at a computational cost, evidenced by frequent MCMC issues. However, the statistical inference for core parameters appears robust to these issues.
-
-## 10\. Exporting Key Tables
+## 9. Exporting Key Tables
 
 We save the processed and aggregated dataframes as CSV files for external analysis.
 
