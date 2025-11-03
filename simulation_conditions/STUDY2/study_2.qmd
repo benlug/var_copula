@@ -1,5 +1,5 @@
 ---
-title: "Study 2 (Exponential DGP): NG Baseline vs EG (Observed Results)"
+title: "Study 2: Comparative Performance of Gaussian and Exponential Copula VAR Models Under Exponential Marginals"
 format:
   html:
     toc: true
@@ -56,54 +56,49 @@ if (!all(file.exists(unlist(files)))) {
 }
 ```
 
-## 0. tl;dr (Observed)
+# 0. tl;dr
 
-* **EG (Exponential–Gaussian, correctly specified)** recovers the **VAR(1) dynamics** $(\Phi)$, **copula dependence** $(\rho)$, and **intercepts** $(\mu)$ with **near‑zero bias** and **near‑nominal (95%) coverage**. Uncertainty is **well‑calibrated** (SD‑Bias ≈ 0).
-* **NG (Normal–Gaussian, misspecified)** is computationally stable but **attenuates $\rho$** (negative bias) and **under‑covers** for $\rho$, with **slightly over‑confident** intervals (negative SD‑Bias). Effects on $\Phi$ are milder than for $\rho$.
-* **Computation**: EG shows more “Problematic” runs (divergences) at small $T$, but **coverage for EG is similar between “Clean” and “Problematic” runs**, and **absolute bias has at most a weak association with divergence counts** under the tuned settings used here.
+## 0.1 Computational Stability
 
-These statements mirror the patterns visible in the study’s figures (status counts, bias/coverage grids, SD‑Bias, marginal summaries, and status‑split diagnostics).
+The EG model, unlike the SN model from Study 1, is computationally stable.
 
-## 1. Introduction
+## 0.2 Model Performance
 
-This analysis evaluates **two models** under a **bivariate VAR(1)** with **Exponential innovations** linked by a **Gaussian copula**:
+The EG model, with correctly specified marginal distributions, demonstrates excellent parameter recovery across all experimental conditions. Point estimates exhibit negligible bias for VAR dynamics ($\Phi$), copula correlation ($\rho$), and intercepts ($\mu$), with empirical coverage maintaining nominal 95% rates and properly calibrated posterior uncertainty (SD-Bias $\approx 0$). 
 
-* **NG** (Normal–Gaussian): fast baseline, **misspecified** margins for Exponential data.
-* **EG** (Exponential–Gaussian): **correctly specified** margins, boundary‑aware likelihood.
+The NG baseline, while computationally stable, exhibits systematic downward bias in copula parameter estimation, with relative bias approaching -0.5 for $\rho$ at small sample sizes. This attenuation bias manifests primarily in dependence structure estimation rather than marginal scale parameters, where deviations remain minimal (|bias| < 0.03).
 
-### 1.1. Data Generating Process (DGP)
+# 1. Introduction
 
-We consider
+This simulation study evaluates the comparative performance of two Bayesian VAR(1) copula models under exponentially distributed innovations:
+  
+- **Normal-Gaussian (NG)**: Baseline assuming Gaussian marginals (misspecified)
+- **Exponential-Gaussian (EG)**: Correctly specified model
 
-$$
-Y_t = \mu + \Phi Y_{t-1} + \varepsilon_t, \qquad t=2,\dots,T,
-$$
+### 1.1 Data Generating Process
 
-with $\mu=\mathbf{0}$. The innovations $\varepsilon_t = (\varepsilon_{1t},\varepsilon_{2t})$ have **Exponential margins** (standardized to mean 0, sd 1 with sign mirroring for direction) and a **Gaussian copula** with correlation $\rho$.
+The study employs a bivariate VAR(1) specification:
+  
+  $$Y_t = \mu + \Phi Y_{t-1} + \epsilon_t, \quad t = 2, \ldots, T$$
+
+with $\mu = 0$ throughout. The innovation vector $\epsilon_t = (\epsilon_{1,t}, \epsilon_{2,t})^\top$ features:
+- **Marginal distributions**: Exponential, standardized to mean 0 and standard deviation 1 through affine transformation
+- **Dependence structure**: Gaussian copula with correlation parameter $\rho$
+- **Directional flexibility**: Sign adjustments enable positive (+), negative (-), or mixed (+/-) skewness configurations
 
 ### 1.2. Simulation Design
 
-A factorial design crosses $T \in \{50,100,200\}$, $\rho \in \{0.30,0.50\}$, skew directions $\{++,+-,--\}$, and two VAR matrices $\Phi \in \{A,B\}$ (A symmetric, B asymmetric). See `data/sim_conditions.rds` for the full grid.
+The factorial design encompasses 36 unique experimental conditions with 200 replications per condition:
+  
+| **Factor** | **Levels** |
+|:-----------|:-----------|
+| **Time Series Length** | $T \in \{50, 100, 200\}$ |
+| **Copula Correlation** | $\rho \in \{0.30, 0.50\}$ |
+| **VAR Structure** | Set A (Symmetric): $\Phi = \begin{pmatrix} 0.40 & 0.10 \\ 0.10 & 0.40 \end{pmatrix}$ |
+| | Set B (Asymmetric): $\Phi = \begin{pmatrix} 0.55 & 0.10 \\ 0.10 & 0.25 \end{pmatrix}$ |
+| **Skewness Direction** | `++` (Both positive), `--` (Both negative), `+-` (Mixed) |
 
-```{r design_table, echo=FALSE}
-design_summary <- tibble::tibble(
-  Factor = c("DGP Level",
-             "Time Series Length (T)",
-             "Copula Correlation (ρ)",
-             "VAR Parameters (Φ)",
-             "",
-             "Skewness Direction"),
-  Levels = c("Standardized Exponential",
-             "50, 100, 200",
-             "0.30, 0.50",
-             "**Set A** (Symmetric): $\\begin{pmatrix} 0.40 & 0.10 \\\\ 0.10 & 0.40 \\end{pmatrix}$",
-             "**Set B** (Asymmetric): $\\begin{pmatrix} 0.55 & 0.10 \\\\ 0.10 & 0.25 \\end{pmatrix}$",
-             "`++` (both right), `--` (both left), `+-` (mixed)")
-)
-knitr::kable(design_summary, caption = "Simulation design factors.", escape = FALSE)
-```
-
-## 2. Data loading & preparation
+## 2. Data Loading and Preparation
 
 ```{r load_data}
 #| label: load_data
@@ -171,7 +166,11 @@ core_params <- c("mu[1]","mu[2]","phi11","phi12","phi21","phi22","rho")
 
 ### 2.1. MCMC classification and overview
 
-```{r classify_mcmc, fig.height=12, fig.width=16}
+Posterior sampling quality is evaluated using identical criteria to Study 1:
+- **Convergence threshold**: $\hat{R} > 1.01$ indicates inadequate mixing
+- **Geometric pathology**: Presence of post-warmup divergent transitions ($n_{\text{div}} > 0$)
+
+```{r classify_mcmc, fig.height=6, fig.width=16}
 #| label: classify_mcmc
 
 RHAT_THRESHOLD <- 1.01
@@ -202,7 +201,7 @@ ggplot(mcmc_summary, aes(x = T, y = Count, fill = mcmc_status)) +
   scale_fill_manual(values = c("Clean" = "#4daf4a", "Problematic" = "#ff7f00", "Failed/Error" = "#e41a1c"))
 ```
 
-```{r divergence_overview, fig.height=9, fig.width=16}
+```{r divergence_overview, fig.height=5, fig.width=16}
 #| label: divergence_overview
 
 div_dist_data <- rep_df |>
@@ -219,7 +218,7 @@ ggplot(div_dist_data, aes(x = T, y = n_div_clean, fill = Model)) +
        y = "Count of Divergences (n_div)", x = "Time Points (T)")
 ```
 
-**Observed:** NG is almost entirely **Clean**; EG shows more **Problematic** runs at small $T$. Divergences are limited in magnitude and concentrated in EG at $T=50$.
+NG is entirely **Clean**; EG shows 4 divergences in total. 
 
 ## 3. Helper plotting utilities
 
@@ -285,7 +284,7 @@ plots_exp <- generate_plots()
 print(plots_exp$bias)
 ```
 
-**Observed:** EG is centered near zero across $\Phi,\ \rho,\ \mu$. NG shows **attenuation bias** for $\rho$ across directions, VAR sets, and $T$ (largest at small $T$).
+EG is centered near zero across $\Phi,\ \rho,\ \mu$. NG shows **attenuation bias** for $\rho$ across directions, VAR sets, and $T$.
 
 ### 4.2. 95% coverage (observed)
 
@@ -294,7 +293,7 @@ print(plots_exp$bias)
 print(plots_exp$coverage)
 ```
 
-**Observed:** EG coverage is **near‑nominal** across parameters; NG **under‑covers** for $\rho$ (often $<0.9$), consistent with the $\rho$ bias.
+EG coverage is **near‑nominal** across parameters; NG **under‑covers** for $\rho$ (often $<0.9$), consistent with the $\rho$ bias.
 
 ### 4.3. SD‑Bias (observed)
 
@@ -302,8 +301,6 @@ print(plots_exp$coverage)
 #| label: exponential_sdbias
 print(plots_exp$sdbias)
 ```
-
-**Observed:** EG SD‑Bias ≈ 0 (calibrated). NG SD‑Bias is **negative** (over‑confident), especially for $\rho$.
 
 ## 5. Marginal parameters (what the models learn)
 
@@ -329,8 +326,6 @@ if (nrow(sigma_exp_data) > 0) {
   message("No EG marginal scale parameters available.")
 }
 ```
-
-**Observed:** EG accurately recovers $\sigma_{\text{exp}}=1$ with negligible bias.
 
 ### 5.2. NG: variance $\sigma$ (truth = 1)
 
@@ -411,8 +406,6 @@ if (nrow(status_comparison_data) > 0 &&
 }
 ```
 
-**Observed:** **Clean** and **Problematic** EG runs show **very similar coverage**, typically near 95%.
-
 ### 6.2. Absolute bias vs divergences
 
 ```{r bias_vs_divergences, fig.height=12, fig.width=16}
@@ -433,8 +426,6 @@ if (nrow(div_bias_data) > 0) {
   message("No EG data available for bias-vs-divergences analysis.")
 }
 ```
-
-**Observed:** Only a **weak** relationship between divergences and absolute bias.
 
 ## 7. Export tables
 
@@ -470,9 +461,4 @@ write_csv(mcmc_health_export, file.path(EXPORT_DIR, "analysis_mcmc_health_counts
 
 message("Tables exported to: ", EXPORT_DIR)
 ```
-
-## 8. One‑paragraph abstract (observed)
-
-Under Exponential innovations with Gaussian‑copula dependence, the correctly specified **EG** model yields **near‑zero bias** for $\Phi,\ \rho,\ \mu$, **near‑nominal coverage**, and **well‑calibrated** uncertainty. The **NG** baseline is computationally clean but **attenuates $\rho$** (negative bias) and **under‑covers** for $\rho$, with only **minor** bias in marginal variance $\sigma$. EG shows more divergences at small $T$, yet **coverage remains similar** between “Clean” and “Problematic” runs, and **bias is only weakly related** to divergence counts under the adopted tuning.
-
 

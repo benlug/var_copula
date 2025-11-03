@@ -1,10 +1,9 @@
 ---
-title: "Study 1: Analysis"
+title: "Study 1: Comparative Performance of Gaussian and Skew-Normal Copula VAR Models Under Marginal Misspecification"
 format:
   html:
     toc: true
     toc_depth: 3
-    echo: false
     code-fold: true
     theme: lumen
     self-contained: true
@@ -49,33 +48,34 @@ if (!all(file.exists(unlist(files)))) {
 }
 ```
 
-## 0. tl;dr
+# 0. tl;dr
 
-### 0.1 Computational vs. inferential
+## 0.1 Computational Stability versus Statistical Inference
 
-- **NG** is computationally robust across conditions (nearly all runs “Clean”); **SG** accumulates problematic diagnostics as skewness increases (especially at \(T=50\) under `strongSN` and in nearly all runs for `extremeCHI`). This is visible in the status counts and in the divergence boxplots.  
-- **Divergences != automatic invalidity.** For **SG**, coverage of the VAR dynamics $\Phi$ looks similar between “Clean” and “Problematic” runs; however, $\rho$ remains poor regardless of status. Model misspecification dominates $\rho$.
+The Normal-Gaussian (NG, Normal Margins, Gaussian Copula) model demonstrates robust computational performance across all simulation conditions, achieving convergence without divergent transitions in all replications. In contrast, the Skew-Gaussian (SG, Skew-Normal Margins, Gaussian Copula) model exhibits increasing computational instability as marginal skewness increases, with divergence rates approaching 100% under extreme misspecification. 
 
-### 0.2 Where NG is adequate and where it breaks
+However, computational diagnostics prove to be poor predictors of statistical validity: the SG model maintains comparable coverage properties for VAR dynamics ($\Phi$) regardless of MCMC status, though copula parameter ($\rho$) estimation remains severely compromised under misspecification irrespective of the model.
 
-- **`moderateSN` (\(\alpha=\pm 4\))**: **NG \(\approx\) SG in practice.** Biases are tiny on the displayed scales (e.g., \(\mu\) panels \(\pm 0.02\)) and coverage hovers near \(0.95\) for both models. No practical advantage for SG at this skewness level.
+## 0.2 Model Performance Across Skewness Conditions
 
-- **`strongSN` (\(\alpha=\pm 9\))**: **SG improves \(\Phi\) modestly** (relative‑bias differences typically within \(\pm 0.1\text{–}0.3\); coverage gains are **hundredths** on a \(0.80\text{–}1.00\) axis). **\(\rho\)** is still down‑biased for both models. **SD‑Bias** magnitudes are **small** (often \(\pm 0.02\text{–}0.03\)), so “massive overconfidence” is not warranted here.
+**Moderate Skewness** (`moderateSN`, $\alpha = \pm 4$): The NG model achieves statistical performance indistinguishable from the correctly specified SG model. Both exhibit negligible bias (|bias| < 0.02 for $\mu$) and maintain nominal coverage rates (~0.95). The additional computational burden of the SG model yields no discernible inferential advantage under mild departures from normality.
 
-- **`extremeCHI` (\(\chi^2_1\) standardized)**: **Both models are misspecified.**
-  - **\(\Phi\):** **SG** retains **small relative bias** (rows typically \(-0.3\ldots 0.1\)) and **coverage \(\sim 0.90\text{–}0.97\)** (worse at \(T=50\)), whereas **NG** is clearly worse.  
-  - **\(\rho\):** **Severe failure for both**—relative bias often \(< -1\) on a \(\rho\) RB axis spanning \(-2\ldots 0\); this implies **frequent sign flips**, not just shrinkage toward zero. Coverage can be well below \(0.9\) on a \(0.5\text{–}1.0\) axis.  
-  - **\(\mu\):** **SG shows visible bias** (\(\mu\) axes \(-0.2\ldots 0.2\)), while **NG** is near zero. **SD‑Bias** is parameter‑specific: **\(\mu\)** is **under‑dispersed** (as low as \(-0.1\) on a \(-0.10\ldots 0\) axis), **\(\Phi\)** is **slightly conservative** (about \(0\) to \(+0.03\)), and **\(\rho\)** is **under‑dispersed** (about \(-0.03\) to \(-0.05\)). These patterns align with **marginal misfit** and **PIT distortion** as the driving mechanism.
+**Strong Skewness** (`strongSN`, $\alpha = \pm 9$): The SG model sometimes demonstrates better recovery of VAR dynamics, with relative bias reductions of 0.1-0.3 compared to NG, though coverage improvements remain small. The copula parameter $\rho$ exhibits substantial downward bias under both models, suggesting fundamental limitations of the Gaussian copula framework under severe marginal skewness.
 
-### 0.3 Mechanism (reframed)
+**Extreme Misspecification** (`extremeCHI`, standardized $\chi^2_1$): Both models fail, though with distinct failure modes:
+  - **VAR Dynamics ($\Phi$)**: The SG model maintains reasonable to good performance (coverage 0.90–0.97 for N≥100), while NG exhibits severe degradation
+  - **Copula Parameter ($\rho$)**: Both models fail, with relative bias exceeding -1.0 under mixed-sign conditions
+  - **Intercepts ($\mu$)**: The SG model exhibits substantial bias (|bias| up to 0.2), while NG remains unbiased, a consequence of the centered parameterization constraint in the SG implementation
 
-- **Primary driver: PIT distortion from marginal misfit**, especially under `extremeCHI`. Changes in **\(\sigma\)** for NG are **small** (\(\approx \pm 0.025\)) and cannot explain the large \(\Phi/\rho\) distortions. The key phenomenon is **non‑uniform PIT** when the assumed marginals (Normal / Skew‑Normal) cannot reproduce true skewness and tails, leading to **attenuated—and often sign‑reversed—\(\rho\)**. Under severe misfit, **location \((\mu)\)** in SG absorbs shape error, producing the observed \(\mu\) bias.
+## 0.3 Insights
 
-## 1. Introduction
+The primary failure mechanism involves Probability Integral Transform (PIT) distortion arising from marginal misspecification. The NG model's scale parameter adjustments ($\sigma$ deviations ≈ ±0.025) are insufficient to accommodate heavy-tailed distributions. When assumed marginals (Normal or Skew-Normal) cannot adequately represent the true marginal behavior, the resulting non-uniform PIT systematically attenuates copula correlations and, in severe cases, induces sign reversals. Under the SG model's centered parameterization, location parameters absorb shape misspecification errors, producing the observed intercept bias while preserving dynamic parameter estimation.
 
-This simulation study compares the performance of two Bayesian Vector Autoregressive (VAR(1)) models: a standard Normal-Gaussian (NG) model and a flexible Skew-Normal-Gaussian (SG) model. The study investigates how these models recover the true parameters when the data generating process (DGP) exhibits varying degrees of skewness in the innovations, coupled by a Gaussian copula.
+# 1. Introduction
 
-### 1.1. Data Generating Process (DGP)
+This simulation study compares the performance of two Bayesian Vector Autoregressive (VAR(1)) models: a standard Normal-Gaussian (NG) model and a Skew-Normal (SG) model. The study investigates how these models recover the true parameters when the data generating process (DGP) exhibits varying degrees of skewness in the innovations, coupled by a Gaussian copula.
+
+## 1.1. Data Generating Process (DGP)
 
 The DGP is a bivariate VAR(1) model:
 
@@ -494,7 +494,7 @@ print(plots_strong$sdbias)
 
 ## 6. Condition 3: Extreme Skewness and Misspecification (extremeCHI)
 
-DGP: Standardized Chi-Squared (df=1) innovations. Highly skewed. Both models are misspecified, but flexibility of the SG model should in theory achieve better results.
+DGP: Standardized Chi-Squared ($df=1$) innovations. Highly skewed. Both models are misspecified, but flexibility of the SG model should in theory achieve better results.
 
 ```{r extremeCHI_plots, results="hide"}
 #| label: extremeCHI_plots
@@ -513,7 +513,7 @@ print(plots_extreme$bias)
 In the `extremeCHI` condition is the substantial bias in the intercepts ($\mu$) for the SG model, while the NG model remains unbiased for $\mu$. 
 
   * **Why NG is unbiased for $\mu$:** The NG model assumes symmetric (Normal) innovations. Estimators for the intercept are generally robust to distributional violations as long as the errors have a mean of zero (which they do in our dgp). The NG model cannot improve the fit by shifting $\mu$; instead, it distorts $\Phi$ and $\rho$.
-  * **Why SG is biased for $\mu$:** This bias stems from the Centered Parameterization (CP) used in the SG model implementation. The CP stabilizes MCMC but imposes a constraint: the estimated Skew-Normal innovations must have a theoretical mean of zero. When the SG model tries to fit the highly irregular Chi-Squared data, it struggles. The Skew-Normal shape is a poor fit for the Chi-Squared shape. To reconcile the data with this poorly fitting shape *and* the zero-mean constraint, the model compensates by shifting the intercept $\mu$. By biasing $\mu$ (e.g., positively), the calculated residuals ($\epsilon_t = Y_t - \text{prediction}$) are shifted (e.g., negatively), allowing them to achieve a higher likelihood under the constrained Skew-Normal distribution.
+  * **Why SG is biased for $\mu$:** This bias stems from the Centered Parameterization (CP) used in the SG model implementation. The CP stabilizes MCMC but imposes a constraint: the estimated Skew-Normal innovations must have a theoretical mean of zero. When the SG model tries to fit the highly Chi-Squared data, it struggles. The Skew-Normal shape is a poor fit for the Chi-Squared shape. To reconcile the data with this poorly fitting shape and the zero-mean constraint, the model compensates by shifting the intercept $\mu$. By biasing $\mu$, the calculated residuals ($\epsilon_t = Y_t - \text{prediction}$) are shifted, allowing a higher likelihood under the constrained Skew-Normal distribution.
 
 The SG model sacrifices the intercept ($\mu$) to compensate for the imperfect fit between the assumed and true shapes under the constraints of the CP, thereby protecting the accuracy of the dynamics ($\Phi$) and dependence ($\rho$).
 
@@ -530,39 +530,37 @@ The `extremeCHI` condition uses standardized Chi-squared innovations with 1 degr
 ::: {.callout-note}
 **Skewness and kurtosis formulas**
 
-- **Chi‑squared** \(\chi^2_\nu\):  
-  \(\mathbb{E}=\nu,\quad \mathrm{Var}=2\nu,\quad \gamma_1=\sqrt{\tfrac{8}{\nu}},\quad \gamma_2=\tfrac{12}{\nu}\) (excess).  
-  For \(\nu=1\): \(\gamma_1\approx 2.828\), \(\gamma_2=12\).
+- $\chi^2_\nu$:
+  $\mathbb{E}=\nu,\quad \mathrm{Var}=2\nu,\quad \gamma_1=\sqrt{\tfrac{8}{\nu}},\quad \gamma_2=\tfrac{12}{\nu}$ (excess).
+  For $\nu=1$: $\gamma_1\approx 2.828$, $\gamma_2=12$.
 
-- **Skew‑normal** \(\mathrm{SN}(\xi,\omega,\alpha)\): with \(\delta=\alpha/\sqrt{1+\alpha^2}\),  
-  \[
+- **Skew‑normal** $\mathrm{SN}(\xi,\omega,\alpha)\): with \(\delta=\alpha/\sqrt{1+\alpha^2}$,
+  $$
   \mu=\xi+\omega\,\delta\,\sqrt{\tfrac{2}{\pi}},\quad
   \sigma^2=\omega^2\Bigl(1-\tfrac{2\delta^2}{\pi}\Bigr),
-  \]
-  \[
+  $$
+  $$
   \gamma_1
   = \frac{(4-\pi)}{2}\;
     \frac{\bigl(\delta\sqrt{\tfrac{2}{\pi}}\bigr)^3}{\bigl(1-\tfrac{2\delta^2}{\pi}\bigr)^{3/2}},\qquad
   \gamma_2
   = 2(\pi-3)\;
     \frac{\bigl(\delta\sqrt{\tfrac{2}{\pi}}\bigr)^4}{\bigl(1-\tfrac{2\delta^2}{\pi}\bigr)^{2}} .
-  \]
-  As \(|\alpha|\to\infty\) (i.e., \(|\delta|\to 1\)), the **maximum skewness** is \(\gamma_1\approx 0.995\) and the **maximum excess kurtosis** is \(\gamma_2\approx 0.869\). This is the basis for the entries in the table contrasting \(\chi^2_1\) vs. Normal vs. Skew‑Normal. 
+  $$
+  As $|\alpha|\to\infty$ (i.e., $|\delta|\to 1$), the **maximum skewness** is $\gamma_1\approx 0.995$ and the **maximum excess kurtosis** is $\gamma_2\approx 0.869$. This is the basis for the entries in the table contrasting $\chi^2_1$ vs. Normal vs. Skew‑Normal.
 :::
 
-**Why PIT failure happens (intuition).** The PIT maps each margin \(Y\) to \(U=F_{\text{assumed}}(Y)\). If \(F_{\text{assumed}}=F_{\text{true}}\), then \(U\sim\mathrm{Uniform}(0,1)\). Under misspecification:
-- **Tail compression:** If the true data have **heavier right tails** (e.g., \(\chi^2_1\)) than the assumed SN/Normal, then very large \(Y\) values **do not land near 1** after transformation; they are pulled back toward the center (e.g., \(U\approx 0.8\) instead of \(0.98\)). Left tails are similarly distorted under mirroring.
-- **Rank distortion:** The PIT is a *ranking* device. By compressing real extremes toward the middle, **co‑extreme** events \((Y_1,Y_2)\) that truly move together in the tails no longer co‑locate in the **corners** of \([0,1]^2\); instead they fall into the **interior**.
+**Why PIT failure happens (intuition).** The PIT maps each margin $Y$ to $U=F_{\text{assumed}}(Y)$. If $F_{\text{assumed}}=F_{\text{true}}$, then $U\sim\mathrm{Uniform}(0,1)$. Under misspecification:
+- **Tail compression:** If the true data have **heavier right tails** (e.g., $\chi^2_1$) than the assumed SN/Normal, then very large $Y$ values **do not land near 1** after transformation; they are pulled back toward the center (e.g., $U\approx 0.8$ instead of $0.98$). Left tails are similarly distorted under mirroring.
+- **Rank distortion:** The PIT is a *ranking* device. By compressing real extremes toward the middle, **co‑extreme** events $(Y_1,Y_2)$ that truly move together in the tails no longer co‑locate in the **corners** of $[0,1]^2$; instead they fall into the **interior**.
 
-For Gaussian copulas, dependence is most visible in the **corners**. When misspecified marginals push mass away from corners, the copula “sees” less tail co‑movement even if it exists in the data, and any fitted \(\rho\) is forced downward. This is exactly what the \(\rho\) relative‑bias panels show on a \([-2,0]\) y‑axis (pp. 18–19). :contentReference[oaicite:4]{index=4}
+For Gaussian copulas, dependence is most visible in the *corners*. When misspecified marginals push mass away from corners, the copula “sees” less tail co‑movement even if it exists in the data, and any fitted $\rho$ is forced downward. This is exactly what the $\rho$ relative‑bias panels show on a $[-2,0]$ y‑axis.
 
-**Why \(\rho\) is pushed toward zero (attenuation).** The joint likelihood factorizes as
-\[
+**Why $\rho$ is pushed toward zero (attenuation).** The joint likelihood factorizes as
+$$
 \prod_t c\bigl(U_{1,t},U_{2,t};\rho\bigr)\, f_1(y_{1,t})\, f_2(y_{2,t}),
-\]
-so only the **copula term** \(c(\cdot\,;\rho)\) can adjust dependence. When the PIT pushes tail pairs \((U_{1,t},U_{2,t})\) **toward the center** \((\approx 0.5,0.5)\), the **Gaussian copula density** becomes less sensitive to \(\rho\) (the score in \(\rho\) flattens). To avoid penalizing improbable tail corners that the distorted \((U_1,U_2)\) no longer occupy, the MLE/posterior moves \(\rho\) **down toward 0**. Hence the **large negative relative bias** and **sub‑nominal coverage** for \(\rho\) in `extremeCHI` (pp. 19–21), regardless of “Clean” or “Problematic” MCMC status. :contentReference[oaicite:5]{index=5}
-
-
+$$
+so only the copula term $c(\cdot\,;\rho)$ can adjust dependence. When the PIT pushes tail pairs $(U_{1,t},U_{2,t})$ toward the center $(\approx 0.5,0.5)$, the Gaussian copula density becomes less sensitive to $\rho$ (the score in $\rho$ flattens). To avoid penalizing improbable tail corners that the distorted $(U_1,U_2)$ no longer occupy, the MLE/posterior moves $\rho$ down toward 0. Hence the large negative relative bias and sub‑nominal coverage for $\rho$ in `extremeCHI`, regardless of “Clean” or “Problematic” MCMC status. :contentReference[oaicite:5]{index=5}
 
 ### 6.2. 95% Coverage (extremeCHI)
 
@@ -616,8 +614,7 @@ ggplot(sigma_data, aes(x = T, y = mean_bias, color = skew_level, group = skew_le
        color = "DGP Skew Level")
 ```
 
-**Interpretation:** The \(\sigma\) bias under NG is **small** (about \(\pm 0.025\) on a tight y‑axis; see p. 23), so it **cannot** by itself explain the large distortions in \(\rho\) and (to a lesser extent) \(\Phi\) under `extremeCHI`. It is better viewed as a **by‑product** of marginal misspecification (some skewness/heavy tails leaking into scale), whereas the **dominant mechanism** behind \(\rho\) failure is the **PIT distortion** described above. :contentReference[oaicite:6]{index=6}
-
+**Interpretation:** The $\sigma$ bias under NG is small (about $\pm 0.025$ on a tight y‑axis), so it cannot by itself explain the large distortions in $\rho$ and (to a lesser extent) $\Phi$ under `extremeCHI`. It is better viewed as a y‑product of marginal misspecification (some skewness/heavy tails leaking into scale), whereas the dominant mechanism behind \(\rho\) failure is the PIT distortion described above.
 
 ### 7.2. The Mechanism of Success: SG Shape Recovery ($\alpha$)
 
@@ -651,10 +648,9 @@ if (nrow(alpha_data) > 0) {
 **Interpretation: Shape Recovery**
 The SG model shows substantial bias in recovering the shape parameters ($\alpha$) at low T (T=50), often underestimating the magnitude of the skewness. However, the bias rapidly diminishes as T increases. Despite the difficulty in precisely estimating $\alpha$, the mere inclusion of the shape parameter allows the SG model to capture the non-Gaussian features sufficiently to avoid the severe biases in $\Phi$ and $\rho$ seen in the NG model.
 
-**Why biased \(\alpha\) can still help.** Two reasons:
-1. **Right direction of shape.** Even if \(\alpha\) is biased at \(T=50\), introducing a **shape degree of freedom** lets the SG model partially align the PIT with the data—enough to keep \(\Phi\) bias small and coverage near nominal in `moderateSN/strongSN` and more stable than NG in `extremeCHI`.
-2. **Identification improves with \(T\).** The \(\alpha\) panels (p. 24) show bias shrinking as \(T\) grows, consistent with increasing information about asymmetry. This is mirrored by improving \(\Phi\) coverage for SG as \(T\) increases in the SN DGPs (pp. 15–16). :contentReference[oaicite:7]{index=7}
-
+**Why biased $\alpha$ can still help.** Two reasons:
+1. **Right direction of shape.** Even if $\alpha$ is biased at $T=50$, introducing a **shape degree of freedom** lets the SG model partially align the PIT with the data—enough to keep $\Phi$ bias small and coverage near nominal in `moderateSN/strongSN` and more stable than NG in `extremeCHI`.
+2. **Identification improves with $T$.** The $\alpha$ panels show bias shrinking as $T$ grows, consistent with increasing information about asymmetry. This is mirrored by improving $\Phi$ coverage for SG as $T$ increases in the SN DGPs.
 
 ## 8\. Impact of MCMC Diagnostics
 
@@ -756,9 +752,6 @@ ggplot(div_bias_data, aes(x = n_div, y = abs(bias))) +
 **Interpretation: Bias vs. Divergences**
 There does not appear to be a strong correlation between the number of divergences and the absolute bias for the core parameters. High bias occurs in runs with few divergences, and low bias occurs in runs with many divergences. This reinforces the conclusion that MCMC diagnostics, while important indicators of computational issues, are not reliable predictors of statistical accuracy in this context.
 
-## 9. Exporting Key Tables
-
-We save the processed and aggregated dataframes as CSV files for external analysis.
 
 ```{r export_tables}
 #| label: export_tables
