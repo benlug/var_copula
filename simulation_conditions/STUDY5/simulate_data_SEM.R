@@ -2,6 +2,7 @@
 # simulate_data_SEM.R — SEM Study A/B with Exponential margins
 # Study A: indicator-skew (ε ~ Exp^± with copula ρ, ζ ~ N)
 # Study B: latent-skew    (ζ ~ Exp^± with copula ρ, ε ≡ 0)
+# Exponential quantiles follow Study 4 note. :contentReference[oaicite:3]{index=3}
 ###########################################################################
 
 if (!requireNamespace("copula", quietly = TRUE)) {
@@ -11,7 +12,7 @@ if (!requireNamespace("copula", quietly = TRUE)) {
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
 # Exponential(+): E(+) = X - 1, X~Exp(1). Left-skew via mirror E(-) = -E(+).
-# Quantiles per Study-4 brief. :contentReference[oaicite:1]{index=1}
+# Quantiles (standardized, right/left):
 q_exp <- function(u, sign = +1L) {
   stopifnot(all(u > 0 & u < 1))
   if (sign == +1L) { # right-skew
@@ -21,7 +22,7 @@ q_exp <- function(u, sign = +1L) {
   }
 }
 
-# draw 2D active-layer residuals via Gaussian copula then apply marginal Q(+/−)
+# draw 2D active-layer residuals via Gaussian copula then marginal Q(+/−)
 draw_active <- function(n, rho, signs) {
   cop <- copula::normalCopula(rho, dim = 2)
   U <- copula::rCopula(n, cop)
@@ -37,23 +38,20 @@ simulate_one_SEM <- function(cond_row, rep_i, output_dir) {
   rho_act <- cond_row$rho
   sgn <- unlist(cond_row$skew_dir)
 
-  # State initialization & containers
-  eta <- matrix(0, Tt, 2)
-  eps <- matrix(0, Tt, 2)
-  z <- matrix(0, Tt, 2) # state innovations
-
+  # State innovations and measurement errors per study
   if (cond_row$sem_study == "A_indicator") {
-    # Study A: ζ ~ N(0, I) ; ε ~ Exp^± with Gaussian copula(ρ_act).
-    z[, ] <- matrix(rnorm(Tt * 2, 0, 1), Tt, 2)
+    # Study A: ζ ~ N(0, I); ε ~ Exp^± (copula ρ) at measurement layer.
+    z <- matrix(rnorm(Tt * 2, 0, 1), Tt, 2)
+    eta <- matrix(0, Tt, 2)
     for (t in 2:Tt) eta[t, ] <- as.numeric(B %*% eta[t - 1, ]) + z[t, ]
-    eps[, ] <- draw_active(Tt, rho_act, sgn)
+    eps <- draw_active(Tt, rho_act, sgn)
     y <- eta + eps
     active_layer <- "measurement"
   } else {
-    # Study B: ζ ~ Exp^± (copula ρ_act) ; ε ≡ 0.
-    z[, ] <- draw_active(Tt, rho_act, sgn)
+    # Study B: ζ ~ Exp^± (copula ρ) at state layer; ε ≡ 0; y = η deterministically.
+    z <- draw_active(Tt, rho_act, sgn)
+    eta <- matrix(0, Tt, 2)
     for (t in 2:Tt) eta[t, ] <- as.numeric(B %*% eta[t - 1, ]) + z[t, ]
-    eps[, ] <- 0
     y <- eta
     active_layer <- "state"
   }

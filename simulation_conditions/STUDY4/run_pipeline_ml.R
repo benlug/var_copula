@@ -114,7 +114,7 @@ if (RUN_FIT) {
     stan_dir = STAN_DIR,
     results_dir = RESULT_DIR,
     chains = 4, iter = 4000, warmup = 2000,
-    adapt_delta = 0.997, max_treedepth = 15,
+    adapt_delta = 0.8, max_treedepth = 10,
     cores_outer = NUM_CORES_OUT,
     start_condition = as.integer(Sys.getenv("START_COND", "1")),
     start_rep = as.integer(Sys.getenv("START_REP", "1"))

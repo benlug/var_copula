@@ -3,8 +3,8 @@
 # fit_models_SEM.R — Stan fitting for SEM Study A/B
 # Codes:
 #   EI = Exponential margins at Indicator layer (Study A)
-#   EL = Exponential margins at Latent/State layer (Study B)
-# Mirrors Study 2's robust compilation/caching & logging. :contentReference[oaicite:2]{index=2}
+#   EL = Exponential margins at Latent/State layer (Study B, ε ≡ 0)
+# Mirrors Study 2 compilation/caching & logging. :contentReference[oaicite:4]{index=4}
 ###########################################################################
 
 fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
@@ -62,22 +62,20 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
   if (!length(models)) stop("No SEM models loaded. Check stan files.")
 
   # ---- init helpers -----------------------------------------------------
-  # Common inits for (mu, phi, rho, eta=log sigma_exp, state path)
   make_init_EI <- function(y, chain_id) {
     set.seed(SEED_BASE_R + chain_id)
-    Tt <- nrow(y)
     list(
       mu = rnorm(2, 0, 0.1),
       phi11 = 0.55, phi12 = 0.10, phi21 = 0.10, phi22 = 0.25,
       eta = rep(log(1.0), 2),
       rho = runif(1, -0.2, 0.2),
-      state = as.matrix(y) # start near y so eps starts small but valid
+      # provide a rough latent trajectory to stabilize the Gaussian state equation
+      state = as.matrix(y)
     )
   }
   make_init_EL <- function(y, chain_id) {
     set.seed(SEED_BASE_R + chain_id)
-    Tt <- nrow(y)
-    # rough OLS for VAR on y to seed phi
+    # rough OLS to seed phi
     ylag <- rbind(c(0, 0), y[-nrow(y), , drop = FALSE])
     f1 <- try(lm(y[, 1] ~ ylag[, 1] + ylag[, 2]), silent = TRUE)
     f2 <- try(lm(y[, 2] ~ ylag[, 1] + ylag[, 2]), silent = TRUE)
@@ -89,8 +87,7 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
       mu = c(0, 0),
       phi11 = phi11, phi12 = phi12, phi21 = phi21, phi22 = phi22,
       eta = rep(log(1.0), 2),
-      rho = runif(1, -0.2, 0.2),
-      state = as.matrix(y) # measurement error ≡ 0 in B, so state≈y is sensible
+      rho = runif(1, -0.2, 0.2)
     )
   }
 
@@ -137,7 +134,6 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
     sd <- list(T = ds$T, y = y, skew_direction = as.integer(ds$skew_signs))
     msgs <- character()
 
-    # run both models (correct vs swapped)
     for (code in c("EI", "EL")) {
       fpath <- file.path(fits_dir, sprintf("fit_%s_cond%03d_rep%03d.rds", code, cid, rid))
       if (file.exists(fpath)) {
@@ -157,7 +153,6 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
 
       seeds <- SEED_BASE_STAN + cid * 1000 + rid + 0:(chains - 1)
 
-      # save init sidecar
       try(
         saveRDS(
           list(
@@ -185,7 +180,6 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
 
       if (inherits(fit, "stanfit") && length(fit@sim) > 0) {
         saveRDS(fit, fpath)
-        # divergence count
         divs <- tryCatch(
           {
             sp <- rstan::get_sampler_params(fit, inc_warmup = FALSE)
@@ -202,11 +196,10 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
         saveRDS(fit, fail)
         msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL", code, cid, rid))
       }
-    } # loop models
+    }
     msgs
-  } # foreach
+  }
 
-  # ---- log --------------------------------------------------------------
   if (length(log_vec)) {
     con <- base::file(log_file, "a")
     on.exit(

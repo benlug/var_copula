@@ -1,6 +1,6 @@
 ###########################################################################
 # run_pipeline_SEM.R — Short SEM Skewness Study (A: indicator, B: latent)
-# Format & flow mirrors Study 2.
+# Mirrors Study 2 pipeline layout and toggles.
 ###########################################################################
 
 suppressPackageStartupMessages({
@@ -55,7 +55,7 @@ set.seed(2042)
 ## =======================================================================
 ## Design grid (short, per Study‑4 brief)  -------------------------------
 ## =======================================================================
-# B matrix (stable, modest cross‑lag)
+# Stable VAR(1) matrix with modest cross‑lags
 B_mat <- matrix(c(
   0.55, 0.10,
   0.10, 0.25
@@ -72,7 +72,7 @@ design_grid <- expand.grid(
   sem_study = c("A_indicator", "B_latent"),
   direction = c("++", "--", "+-"),
   T = 100,
-  rho = c(0.00, 0.30), # correlation at the active layer (ε for A, ζ for B)
+  rho = c(0.00, 0.30), # correlation at the active layer
   stringsAsFactors = FALSE
 ) |>
   mutate(
@@ -121,7 +121,7 @@ if (RUN_FITTING) {
     chains = 4,
     iter = 3000,
     warmup = 1500,
-    adapt_delta = 0.995, # boundary‑aware as in Study 2
+    adapt_delta = 0.995,
     max_treedepth = 15,
     cores_outer = NUM_CORES_OUT,
     start_condition = START_COND,

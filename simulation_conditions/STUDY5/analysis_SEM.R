@@ -1,6 +1,6 @@
 ###########################################################################
 # analysis_sem.R — Aggregation & metrics for SEM Study A/B (EI vs EL)
-# Mirrors Study 2 analysis (bias, coverage, SD-bias, mcmc diagnostics). :contentReference[oaicite:3]{index=3}
+# Mirrors Study 2 analysis (bias, coverage, SD-bias, mcmc diagnostics). :contentReference[oaicite:5]{index=5}
 ###########################################################################
 
 suppressPackageStartupMessages({
@@ -56,7 +56,6 @@ quick_summary <- function(fit, want_full) {
     dplyr::filter(param %in% want_full)
 }
 
-# parameters to collect (same names in both Stan models)
 CORE <- c("mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22", "rho")
 EXTRA <- c("sigma_exp[1]", "sigma_exp[2]") # active-layer scales
 
@@ -101,7 +100,6 @@ for (i in seq_along(fits)) {
     next
   }
 
-  # ground truth (standardized Exponential margins; rho at active layer)
   truth <- c(
     `mu[1]` = 0, `mu[2]` = 0,
     phi11 = sim$phi_matrix[1, 1], phi12 = sim$phi_matrix[1, 2],
