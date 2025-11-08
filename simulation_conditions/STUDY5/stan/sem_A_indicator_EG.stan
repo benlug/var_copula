@@ -1,39 +1,36 @@
-// sem_A_indicator_EG.stan
-// Study A: skew in measurement layer (epsilon), state innovations Gaussian.
-// Exponential margins are standardized; scale estimated via sigma_exp = exp(eta).
-// Gaussian copula links the two measurement residuals (per time) via rho.
-// Quantiles/CDFs per Study‑4 (standardized Exp). :contentReference[oaicite:6]{index=6}
+// sem_A_indicator_EG.stan  (NON-CENTERED WITH FIX 3)
+// Study A: indicator-skew (skew in measurement errors), Gaussian state dynamics.
+// Exponential margins for measurement residuals with Gaussian copula at the
+// active layer. Non-centered state innovations to improve mixing on long T.
+// FIX 3: Added bounds checking to detect and reject support violations
+//
+// References: Study‑4 brief for model placement; Study‑2 coding style. 
 
 functions {
-  // Standardized exponential margins: E(+) = X - 1, X~Exp(1); E(-) = -E(+)
+  // One‑sided standardized exponential margin (mean 0, sd 1) with scale s>0.
+  // dir = +1 (right-skew): support e >= -s ; dir = -1 (left-skew): support e <= s.
   real exp_margin_lpdf(real e, real s, int dir) {
-    // dir = +1 for E(+), dir = -1 for E(-)
     if (dir == 1) {
-      real x = e / s + 1;         // support e >= -s
+      real x = e / s + 1;             // x >= 0 required
       if (x < 0) return negative_infinity();
-      return exponential_lpdf(x | 1) - log(s);
+      return exponential_lpdf(x | 1) - log(s);  // Jacobian
     } else {
-      real x = 1 - e / s;         // support e <= s
+      real x = 1 - e / s;             // x >= 0 required
       if (x < 0) return negative_infinity();
-      return exponential_lpdf(x | 1) - log(s);
+      return exponential_lpdf(x | 1) - log(s);  // Jacobian
     }
   }
   real exp_margin_cdf(real e, real s, int dir) {
-    if (dir == 1) {
-      return 1 - exp(-(e / s + 1));   // e >= -s
-    } else {
-      return exp(e / s - 1);          // e <=  s
-    }
+    // safe, monotone CDFs (no log terms)
+    if (dir == 1) return 1 - exp(-(e / s + 1));
+    else          return exp(e / s - 1);
   }
-  // Gaussian copula density in log-space (requires u in (0,1))
+  // Gaussian copula log-density for scalar uniforms u1,u2 in (0,1).
   real gauss_copula_lpdf(real u1, real u2, real rho) {
-    vector[2] z;
-    matrix[2,2] S;
-    vector[2] mu0;
+    vector[2] z; matrix[2,2] S; vector[2] mu0;
     z[1] = inv_Phi(fmin(fmax(u1, 1e-9), 1 - 1e-9));
     z[2] = inv_Phi(fmin(fmax(u2, 1e-9), 1 - 1e-9));
-    S[1,1] = 1; S[1,2] = rho;
-    S[2,1] = rho; S[2,2] = 1;
+    S[1,1] = 1; S[1,2] = rho; S[2,1] = rho; S[2,2] = 1;
     mu0[1] = 0; mu0[2] = 0;
     return multi_normal_lpdf(z | mu0, S)
          - normal_lpdf(z[1] | 0, 1) - normal_lpdf(z[2] | 0, 1);
@@ -41,55 +38,112 @@ functions {
 }
 
 data {
-  int<lower=1> T;
-  matrix[T,2] y;
-  int<lower=-1, upper=1> skew_direction[2]; // +1 right, -1 left
+  int<lower=1> T;               // time points
+  matrix[T,2] y;                // observed indicators
+  int<lower=-1, upper=1> skew_direction[2];  // +1 right, -1 left per margin
 }
 
 parameters {
+  // VAR(1) on the latent state (Gaussian innovations)
   vector[2] mu;
   real phi11; real phi12;
   real phi21; real phi22;
-  vector[2] eta;                         // log sigma_exp
-  real<lower=-0.995, upper=0.995> rho;   // copula correlation at measurement layer
-  matrix[T,2] state;                     // latent states
+
+  // measurement Exponential scales (log scale)
+  vector[2] eta;   // sigma_exp = exp(eta)
+
+  // same-time copula correlation at measurement layer
+  real<lower=-0.995, upper=0.995> rho;
+
+  // NON-CENTERED innovations for the latent state evolution
+  // z_raw[t,] ~ N(0, I), and we build state deterministically from these.
+  matrix[T,2] z_raw;
 }
 
 transformed parameters {
   vector<lower=0>[2] sigma_exp = exp(eta);
   matrix[2,2] B;
-  B[1,1]=phi11; B[1,2]=phi12;
-  B[2,1]=phi21; B[2,2]=phi22;
+  matrix[T,2] state;
+
+  B[1,1] = phi11; B[1,2] = phi12;
+  B[2,1] = phi21; B[2,2] = phi22;
+
+  {
+    vector[2] s;
+    // state recursion using non-centered shocks
+    for (t in 1:T) {
+      vector[2] z_t = to_vector(z_raw[t]);   // standard normal shocks
+      if (t == 1) {
+        s = mu + z_t;                        // prior: state[1] ~ N(mu, I)
+      } else {
+        s = mu + B * s + z_t;                // state[t] = mu + B*state[t-1] + z_t
+      }
+      state[t,1] = s[1];
+      state[t,2] = s[2];
+    }
+  }
 }
 
 model {
-  // Priors (weakly informative)
-  mu ~ normal(0, 1);
+  // priors (weakly informative)
+  mu    ~ normal(0, 1);
   phi11 ~ normal(0, 0.5);  phi22 ~ normal(0, 0.5);
   phi12 ~ normal(0, 0.3);  phi21 ~ normal(0, 0.3);
-  eta   ~ normal(0, 0.5);         // sigma_exp ~ lognormal(0,0.5)
+
+  // keep measurement scales from collapsing too small at init;
+  // still wide enough for data to adjust.
+  eta   ~ normal(log(1.0), 0.7);
+
   rho   ~ normal(0, 0.5);
 
-  // Gaussian state innovations
-  for (j in 1:2) state[1,j] ~ normal(0, 1);
-  for (t in 2:T) {
-    vector[2] mean_t = mu + B * (state[t-1]') ;
-    for (j in 1:2)
-      state[t,j] ~ normal(mean_t[j], 1);
-  }
+  // non-centered state innovations
+  // FIX 3: Explicit prior on z_raw to prevent extreme values
+  to_vector(z_raw) ~ normal(0, 1);
 
-  // Measurement residuals: epsilon_t = y_t - state_t with Exp margins + copula
+  // measurement likelihood with Gaussian copula at the active layer
   for (t in 1:T) {
     real e1 = y[t,1] - state[t,1];
     real e2 = y[t,2] - state[t,2];
-
-    // marginals
+    
+    // FIX 3: Check support violations before computing likelihood
+    // This provides better diagnostics than silent failures
+    if (skew_direction[1] == 1) {
+      if (e1 < -sigma_exp[1]) {
+        reject("Support violation at t=", t, ": e1=", e1, 
+               " < -sigma_exp[1]=", -sigma_exp[1], 
+               " (right-skew requires e1 >= -sigma_exp[1])");
+      }
+    } else {
+      if (e1 > sigma_exp[1]) {
+        reject("Support violation at t=", t, ": e1=", e1, 
+               " > sigma_exp[1]=", sigma_exp[1], 
+               " (left-skew requires e1 <= sigma_exp[1])");
+      }
+    }
+    
+    if (skew_direction[2] == 1) {
+      if (e2 < -sigma_exp[2]) {
+        reject("Support violation at t=", t, ": e2=", e2, 
+               " < -sigma_exp[2]=", -sigma_exp[2], 
+               " (right-skew requires e2 >= -sigma_exp[2])");
+      }
+    } else {
+      if (e2 > sigma_exp[2]) {
+        reject("Support violation at t=", t, ": e2=", e2, 
+               " > sigma_exp[2]=", sigma_exp[2], 
+               " (left-skew requires e2 <= sigma_exp[2])");
+      }
+    }
+    
+    // marginal terms (one-sided support enforced by exp_margin_lpdf)
     target += exp_margin_lpdf(e1 | sigma_exp[1], skew_direction[1]);
     target += exp_margin_lpdf(e2 | sigma_exp[2], skew_direction[2]);
 
-    // copula on (e1,e2)
-    real u1 = exp_margin_cdf(e1 | sigma_exp[1], skew_direction[1]);
-    real u2 = exp_margin_cdf(e2 | sigma_exp[2], skew_direction[2]);
-    target += gauss_copula_lpdf(u1 | u2, rho);
+    // copula term
+    {
+      real u1 = exp_margin_cdf(e1 | sigma_exp[1], skew_direction[1]);
+      real u2 = exp_margin_cdf(e2 | sigma_exp[2], skew_direction[2]);
+      target += gauss_copula_lpdf(u1 | u2, rho);
+    }
   }
 }

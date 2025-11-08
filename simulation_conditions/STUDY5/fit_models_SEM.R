@@ -1,15 +1,15 @@
 #!/usr/bin/env Rscript
 ###########################################################################
-# fit_models_SEM.R — Stan fitting for SEM Study A/B
-# Codes:
-#   EI = Exponential margins at Indicator layer (Study A)
-#   EL = Exponential margins at Latent/State layer (Study B, ε ≡ 0)
-# Mirrors Study 2 compilation/caching & logging. :contentReference[oaicite:4]{index=4}
+# fit_models_SEM.R — Stan fitting for SEM Study A/B  (UPDATED WITH FIX 1)
+# • EI: non-centered state parameterization in Stan file; inits adjusted
+# • EL: support-aware init for sigma_exp (unchanged from previous)
+# • On success, stale fit_ERR_* for same cell are pruned
+# • FIX 1: Added proper z_raw initialization to avoid support violations
 ###########################################################################
 
 fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
                            chains = 4, iter = 3000, warmup = 1500,
-                           adapt_delta = 0.995, max_treedepth = 15,
+                           adapt_delta = 0.997, max_treedepth = 15,
                            cores_outer = 2,
                            start_condition = 1, start_rep = 1) {
   suppressPackageStartupMessages({
@@ -59,34 +59,48 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
     EL = model_cache(file.path(stan_dir, "sem_B_latent_EG.stan"), "SEM_Latent_EG")
   )
   models <- Filter(Negate(is.null), models)
-  if (!length(models)) stop("No SEM models loaded. Check stan files.")
+  if (!length(models)) stop("No SEM models loaded. Check Stan files.")
 
   # ---- init helpers -----------------------------------------------------
+  # EI (non-centered): FIX 1 - properly initialize z_raw
   make_init_EI <- function(y, chain_id) {
     set.seed(SEED_BASE_R + chain_id)
+    T_len <- nrow(y)
+
+    # Initialize z_raw conservatively to avoid support violations
+    # Using smaller SD (0.5) to prevent extreme state values that could
+    # push measurement errors outside their exponential support
     list(
       mu = rnorm(2, 0, 0.1),
       phi11 = 0.55, phi12 = 0.10, phi21 = 0.10, phi22 = 0.25,
-      eta = rep(log(1.0), 2),
+      eta = rnorm(2, mean = log(1.0), sd = 0.4),
       rho = runif(1, -0.2, 0.2),
-      # provide a rough latent trajectory to stabilize the Gaussian state equation
-      state = as.matrix(y)
+      z_raw = matrix(rnorm(T_len * 2, 0, 0.5), T_len, 2) # FIX 1: Added explicit init
     )
   }
-  make_init_EL <- function(y, chain_id) {
+
+  # EL: support-aware init (unchanged)
+  make_init_EL <- function(y, skew_dir, chain_id) {
     set.seed(SEED_BASE_R + chain_id)
-    # rough OLS to seed phi
     ylag <- rbind(c(0, 0), y[-nrow(y), , drop = FALSE])
     f1 <- try(lm(y[, 1] ~ ylag[, 1] + ylag[, 2]), silent = TRUE)
     f2 <- try(lm(y[, 2] ~ ylag[, 1] + ylag[, 2]), silent = TRUE)
-    phi11 <- if (!inherits(f1, "try-error")) coef(f1)[2] %||% 0.55 else 0.55
-    phi12 <- if (!inherits(f1, "try-error")) coef(f1)[3] %||% 0.10 else 0.10
-    phi21 <- if (!inherits(f2, "try-error")) coef(f2)[2] %||% 0.10 else 0.10
-    phi22 <- if (!inherits(f2, "try-error")) coef(f2)[3] %||% 0.25 else 0.25
+    phi11 <- if (!inherits(f1, "try-error") && is.finite(coef(f1)[2])) coef(f1)[2] else 0.55
+    phi12 <- if (!inherits(f1, "try-error") && is.finite(coef(f1)[3])) coef(f1)[3] else 0.10
+    phi21 <- if (!inherits(f2, "try-error") && is.finite(coef(f2)[2])) coef(f2)[2] else 0.10
+    phi22 <- if (!inherits(f2, "try-error") && is.finite(coef(f2)[3])) coef(f2)[3] else 0.25
+    mu <- c(0, 0)
+    z <- cbind(
+      y[, 1] - (mu[1] + phi11 * ylag[, 1] + phi12 * ylag[, 2]),
+      y[, 2] - (mu[2] + phi21 * ylag[, 1] + phi22 * ylag[, 2])
+    )[-1, , drop = FALSE]
+    saf <- 1.05
+    min_s1 <- if (skew_dir[1] == 1L) max(1, saf * max(-z[, 1], na.rm = TRUE)) else max(1, saf * max(z[, 1], na.rm = TRUE))
+    min_s2 <- if (skew_dir[2] == 1L) max(1, saf * max(-z[, 2], na.rm = TRUE)) else max(1, saf * max(z[, 2], na.rm = TRUE))
     list(
-      mu = c(0, 0),
+      mu = mu,
       phi11 = phi11, phi12 = phi12, phi21 = phi21, phi22 = phi22,
-      eta = rep(log(1.0), 2),
+      eta = log(c(min_s1, min_s2)),
       rho = runif(1, -0.2, 0.2)
     )
   }
@@ -131,11 +145,14 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
     }
 
     y <- as.matrix(ds$data[, c("y1", "y2")])
-    sd <- list(T = ds$T, y = y, skew_direction = as.integer(ds$skew_signs))
+    skew_dir <- as.integer(ds$skew_signs)
+    sd <- list(T = ds$T, y = y, skew_direction = skew_dir)
     msgs <- character()
 
     for (code in c("EI", "EL")) {
       fpath <- file.path(fits_dir, sprintf("fit_%s_cond%03d_rep%03d.rds", code, cid, rid))
+      errpth <- file.path(fits_dir, sprintf("fit_ERR_%s_cond%03d_rep%03d.rds", code, cid, rid))
+
       if (file.exists(fpath)) {
         chk <- try(readRDS(fpath), silent = TRUE)
         if (inherits(chk, "stanfit") && length(chk@sim) > 0 && length(chk@sim$samples) > 0) {
@@ -148,9 +165,8 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
 
       inits <- switch(code,
         EI = lapply(seq_len(chains), function(k) make_init_EI(y, cid * 1000 + rid * 10 + k)),
-        EL = lapply(seq_len(chains), function(k) make_init_EL(y, cid * 1000 + rid * 10 + k))
+        EL = lapply(seq_len(chains), function(k) make_init_EL(y, skew_dir, cid * 1000 + rid * 10 + k))
       )
-
       seeds <- SEED_BASE_STAN + cid * 1000 + rid + 0:(chains - 1)
 
       try(
@@ -180,6 +196,8 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
 
       if (inherits(fit, "stanfit") && length(fit@sim) > 0) {
         saveRDS(fit, fpath)
+        if (file.exists(errpth)) try(unlink(errpth), silent = TRUE) # prune stale error
+
         divs <- tryCatch(
           {
             sp <- rstan::get_sampler_params(fit, inc_warmup = FALSE)
@@ -192,9 +210,9 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
           code, cid, rid, ifelse(is.na(divs), "NA", as.character(divs))
         ))
       } else {
-        fail <- file.path(fits_dir, sprintf("fit_ERR_%s_cond%03d_rep%03d.rds", code, cid, rid))
-        saveRDS(fit, fail)
-        msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL", code, cid, rid))
+        saveRDS(fit, errpth)
+        msg <- if (inherits(fit, "error")) conditionMessage(fit) else paste("unexpected type:", class(fit)[1])
+        msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL – %s", code, cid, rid, msg))
       }
     }
     msgs

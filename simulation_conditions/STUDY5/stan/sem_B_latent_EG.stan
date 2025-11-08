@@ -1,8 +1,6 @@
-// sem_B_latent_EG.stan
-// Study B: skew in state innovations (zeta); measurement error ≡ 0.
-// Exponential margins for ζ with Gaussian copula rho.
-// No latent "state" parameter; the likelihood is written directly for y_t.
-// This is equivalent to a VAR(1) with Exponential innovations (SEM view).
+// sem_B_latent_EG.stan  (UPDATED WITH FIXES)
+// Study B: latent-skew (skew in state innovations), measurement error ≡ 0.
+// FIX: Better support violation handling and more efficient vector operations
 
 functions {
   real exp_margin_lpdf(real e, real s, int dir) {
@@ -30,7 +28,7 @@ functions {
 
 data {
   int<lower=1> T;
-  matrix[T,2] y;                          // observed series
+  matrix[T,2] y;
   int<lower=-1, upper=1> skew_direction[2];
 }
 
@@ -56,17 +54,52 @@ model {
   eta   ~ normal(0, 0.5);
   rho   ~ normal(0, 0.5);
 
-  // Innovations ζ_t implied by y_t = mu + B y_{t-1} + ζ_t (for t >= 2)
+  // y_t = mu + B y_{t-1} + ζ_t   with ζ having exponential margins
   for (t in 2:T) {
-    vector[2] mean_t = mu + B * (y[t-1]') ;
+    // FIX: More efficient - use to_vector instead of transpose
+    vector[2] mean_t = mu + B * to_vector(y[t-1]);
     real z1 = y[t,1] - mean_t[1];
     real z2 = y[t,2] - mean_t[2];
+
+    // FIX: Better support checking with proper error reporting
+    // Check support violations and reject with informative message
+    if (skew_direction[1] == 1) {
+      if (z1 < -sigma_exp[1]) {
+        reject("Support violation at t=", t, ": z1=", z1, 
+               " < -sigma_exp[1]=", -sigma_exp[1], 
+               " (right-skew requires z1 >= -sigma_exp[1])");
+      }
+    } else {
+      if (z1 > sigma_exp[1]) {
+        reject("Support violation at t=", t, ": z1=", z1, 
+               " > sigma_exp[1]=", sigma_exp[1], 
+               " (left-skew requires z1 <= sigma_exp[1])");
+      }
+    }
+    
+    if (skew_direction[2] == 1) {
+      if (z2 < -sigma_exp[2]) {
+        reject("Support violation at t=", t, ": z2=", z2, 
+               " < -sigma_exp[2]=", -sigma_exp[2], 
+               " (right-skew requires z2 >= -sigma_exp[2])");
+      }
+    } else {
+      if (z2 > sigma_exp[2]) {
+        reject("Support violation at t=", t, ": z2=", z2, 
+               " > sigma_exp[2]=", sigma_exp[2], 
+               " (left-skew requires z2 <= sigma_exp[2])");
+      }
+    }
 
     target += exp_margin_lpdf(z1 | sigma_exp[1], skew_direction[1]);
     target += exp_margin_lpdf(z2 | sigma_exp[2], skew_direction[2]);
 
-    real u1 = exp_margin_cdf(z1 | sigma_exp[1], skew_direction[1]);
-    real u2 = exp_margin_cdf(z2 | sigma_exp[2], skew_direction[2]);
-    target += gauss_copula_lpdf(u1 | u2, rho);
+    {
+      // FIX: Compute CDFs only if on-support (which we've now verified above)
+      // This is now guaranteed to be valid after the support checks
+      real u1 = exp_margin_cdf(z1 | sigma_exp[1], skew_direction[1]);
+      real u2 = exp_margin_cdf(z2 | sigma_exp[2], skew_direction[2]);
+      target += gauss_copula_lpdf(u1 | u2, rho);
+    }
   }
 }
