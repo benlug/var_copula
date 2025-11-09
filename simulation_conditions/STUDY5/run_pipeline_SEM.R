@@ -14,54 +14,48 @@ suppressPackageStartupMessages({
 })
 
 ## -- folders -------------------------------------------------------------
-tryCatch(
-  {
-    BASE_DIR <- this.path::this.dir()
-    setwd(BASE_DIR)
-  },
-  error = function(e) {
-    message("Could not set directory using this.path::this.dir(). Using getwd().")
-    BASE_DIR <- getwd()
-  }
-)
+tryCatch({
+  BASE_DIR <- this.path::this.dir()
+  setwd(BASE_DIR)
+}, error = function(e) {
+  message("Could not set directory using this.path::this.dir(). Using getwd().")
+  BASE_DIR <- getwd()
+})
 
-DATA_DIR <- file.path(BASE_DIR, "data")
-CHECKS_DIR <- file.path(BASE_DIR, "checks")
-FITS_DIR <- file.path(BASE_DIR, "fits_sem")
+DATA_DIR   <- file.path(BASE_DIR, "data")
+CHECKS_DIR <- file.path(BASE_DIR, "checks_sem")
+FITS_DIR   <- file.path(BASE_DIR, "fits_sem")
 RESULT_DIR <- file.path(BASE_DIR, "results_sem")
-STAN_DIR <- file.path(BASE_DIR, "stan") # Stan models live here
+STAN_DIR   <- file.path(BASE_DIR, "stan")        # <-- was missing; needed by fit_models
 
-dir.create(DATA_DIR, FALSE, TRUE)
+dir.create(DATA_DIR,   FALSE, TRUE)
 dir.create(CHECKS_DIR, FALSE, TRUE)
-dir.create(FITS_DIR, FALSE, TRUE)
+dir.create(FITS_DIR,   FALSE, TRUE)
 dir.create(RESULT_DIR, FALSE, TRUE)
+dir.create(STAN_DIR,   FALSE, TRUE)
 
 ## -- resume flags --------------------------------------------------------
 START_COND <- as.integer(Sys.getenv("START_COND", "1"))
-START_REP <- as.integer(Sys.getenv("START_REP", "1"))
+START_REP  <- as.integer(Sys.getenv("START_REP",  "1"))
 message(">>> SEM Pipeline Start. Resume: Condition=", START_COND, ", Replication=", START_REP)
 
 ## -- toggles & constants -------------------------------------------------
-RUN_SIM <- TRUE
-RUN_CHECKS <- FALSE # optional stub
-RUN_FITTING <- TRUE
-RUN_ANALYSIS <- TRUE
-RUN_VISUALIZATION <- FALSE
+RUN_SIM          <- TRUE
+RUN_CHECKS       <- TRUE
+RUN_FITTING      <- TRUE
+RUN_ANALYSIS     <- TRUE
+RUN_VISUALIZATION<- FALSE
 
 REPS_PER_CELL <- 100
-NUM_CORES_OUT <- max(1, parallel::detectCores() - 1)
-set.seed(2042)
+NUM_CORES_OUT <- 26 #max(1, parallel::detectCores() - 1)
+set.seed(2124042)
 
 ## =======================================================================
-## Design grid (short, per Study‑4 brief)  -------------------------------
+## Design grid (short, per Study-4 brief)  -------------------------------
 ## =======================================================================
-# Stable VAR(1) matrix with modest cross‑lags
-B_mat <- matrix(c(
-  0.55, 0.10,
-  0.10, 0.25
-), 2, 2, byrow = TRUE)
+B_mat <- matrix(c(0.55, 0.10,
+                  0.10, 0.25), 2, 2, byrow = TRUE)
 
-# helper for Exponential skew sign (+ right, − left)
 assign_skew <- function(dir_flag) {
   s1 <- if (substr(dir_flag, 1, 1) == "+") +1L else -1L
   s2 <- if (substr(dir_flag, 2, 2) == "+") +1L else -1L
@@ -70,9 +64,9 @@ assign_skew <- function(dir_flag) {
 
 design_grid <- expand.grid(
   sem_study = c("A_indicator", "B_latent"),
-  direction = c("++", "--", "+-"),
-  T = 100,
-  rho = c(0.00, 0.30), # correlation at the active layer
+  direction = c("++", "+-"),
+  T         = 100,
+  rho       = c(0.30),
   stringsAsFactors = FALSE
 ) |>
   mutate(
@@ -100,11 +94,16 @@ if (RUN_SIM) {
 }
 
 ## =======================================================================
-## 2 · (Optional) Checks --------------------------------------------------
+## 2 · Checks -------------------------------------------------------------
 ## =======================================================================
 if (RUN_CHECKS) {
   message("\n>>> Running Checks …")
-  # source("check_simulations_SEM.R", local = TRUE)  # optional
+  source("check_simulations_SEM.R", local = TRUE)
+  run_post_sim_checks_sem(
+    DATA_DIR   = DATA_DIR,
+    FITS_DIR   = FITS_DIR,
+    CHECKS_DIR = CHECKS_DIR
+  )
 }
 
 ## =======================================================================
@@ -114,18 +113,18 @@ if (RUN_FITTING) {
   message("\n>>> Running Stan Fitting (SEM) …")
   source("fit_models_SEM.R", local = TRUE)
   fit_sem_models(
-    data_dir = DATA_DIR,
-    fits_dir = FITS_DIR,
-    stan_dir = STAN_DIR,
-    results_dir = RESULT_DIR,
-    chains = 4,
-    iter = 3000,
-    warmup = 1500,
-    adapt_delta = 0.995,
-    max_treedepth = 15,
-    cores_outer = NUM_CORES_OUT,
-    start_condition = START_COND,
-    start_rep = START_REP
+    data_dir       = DATA_DIR,
+    fits_dir       = FITS_DIR,
+    stan_dir       = STAN_DIR,      # now defined
+    results_dir    = RESULT_DIR,
+    chains         = 4,
+    iter           = 3000,
+    warmup         = 1500,
+    adapt_delta    = 0.9,
+    max_treedepth  = 12,
+    cores_outer    = NUM_CORES_OUT,
+    start_condition= START_COND,
+    start_rep      = START_REP
   )
 }
 

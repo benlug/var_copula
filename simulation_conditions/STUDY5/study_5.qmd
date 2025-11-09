@@ -1,0 +1,354 @@
+---
+title: "SEM Skewness Study: Indicator vs. Latent (Exponential Margins, Gaussian Copula)"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    theme: lumen
+    self-contained: true
+  pdf:
+    toc: true
+    toc-depth: 3
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+#| label: setup
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(ggplot2)
+  library(stringr)
+  library(knitr)
+})
+
+# Paths for the SEM study
+DATA_DIR   <- "data"
+RES_DIR    <- "results_sem"
+EXPORT_DIR <- file.path(RES_DIR, "exported_tables")
+dir.create(EXPORT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+files <- list(
+  cond   = file.path(RES_DIR,  "summary_conditions_sem.csv"),
+  rep    = file.path(RES_DIR,  "summary_replications_sem.csv"),
+  design = file.path(DATA_DIR, "sim_conditions_sem.rds")
+)
+
+if (!all(file.exists(unlist(files)))) {
+  stop("Missing input(s): expecting results_sem/summary_*.csv and data/sim_conditions_sem.rds. ",
+       "Please run analysis_sem.R first.")
+}
+
+# Load design and summaries
+design <- readRDS(files$design) |>
+  dplyr::select(condition_id, sem_study, direction, T, rho)
+
+cond_raw <- read_csv(files$cond, show_col_types = FALSE)
+rep_raw  <- read_csv(files$rep,  show_col_types = FALSE)
+
+# Join design fields onto the summaries
+cond <- cond_raw |> left_join(design, by = "condition_id")
+rep_df <- rep_raw |> filter(!is.na(param)) |> left_join(design, by = "condition_id")
+
+# Pretty labels and factor levels
+model_labs <- c(EI = "Indicator-skew (EI)", EL = "Latent-skew (EL)")
+rep_df <- rep_df |>
+  mutate(
+    Model = factor(model, levels = c("EI","EL"), labels = model_labs),
+    sem_study = factor(sem_study, levels = c("A_indicator","B_latent"),
+                       labels = c("A: indicator-skew","B: latent-skew")),
+    T  = factor(T),
+    rho = factor(rho),
+    direction = factor(direction, levels = c("++","--","+-"))
+  )
+
+cond <- cond |>
+  mutate(
+    Model = factor(model, levels = c("EI","EL"), labels = model_labs),
+    sem_study = factor(sem_study, levels = c("A_indicator","B_latent"),
+                       labels = c("A: indicator-skew","B: latent-skew")),
+    T  = factor(T),
+    rho = factor(rho),
+    direction = factor(direction, levels = c("++","--","+-"))
+  )
+
+# Parameter groups
+core_params  <- c("mu[1]","mu[2]","phi11","phi12","phi21","phi22","rho")
+extra_params <- c("sigma_exp[1]","sigma_exp[2]")
+
+# Simple ggplot theme
+theme_standard <- theme_bw(base_size = 13)
+
+`%||%` <- function(a,b) if (!is.null(a)) a else b
+```
+
+# 0. tl;dr
+
+**Question.** How do estimates and uncertainty behave when **skewness lives at different layers** of a SEM/VAR(1)?
+
+* **Study A (EI):** skewed **measurement errors** (exponential margins), Gaussian state
+* **Study B (EL):** skewed **state innovations** (exponential margins), no measurement error
+
+**Key expectations (to confirm with the figures below):**
+
+* **Layer matters.** When fitted at the correct layer, both EI and EL should recover the VAR dynamics ($\Phi$) and intercepts ($\mu$) well at (T=100).
+* **($\rho$) sensitivity.** The Gaussian copula correlation ($\rho$) is estimated on the **active layer**; misspecifying the layer (fitting EI to EL data or vice versa) tends to attenuate ($\hat{\rho}$).
+* **Diagnostics vs. inference.** Occasional divergences (near one‑sided bounds) need not imply poor inference for ($\Phi$) or ($\mu$), but do check coverage by parameter.
+
+# 1. Introduction
+
+We compare two bivariate SEM/VAR(1) formulations with **exponential one‑sided margins** and a **Gaussian copula**:
+
+* **EI (indicator‑skew):**
+  $$
+  \mathbf s_t=\boldsymbol\mu+\mathbf B,\mathbf s_{t-1}+\boldsymbol\eta_t,\quad
+  \boldsymbol\eta_t\sim\mathcal N(\mathbf 0,\mathbf I),\qquad
+  \mathbf y_t=\mathbf s_t+\boldsymbol\varepsilon_t.
+  $$
+  Skewness and ($\rho$) live in ($\boldsymbol\varepsilon_t$).
+
+* **EL (latent‑skew):**
+  $$
+  \mathbf y_t=\boldsymbol\mu+\mathbf B,\mathbf y_{t-1}+\boldsymbol\zeta_t.
+  $$
+  Skewness and ($\rho$) live in ($\boldsymbol\zeta_t$).
+
+Each margin uses an **exponential** law with **sign** (`direction`):
+right‑skew ((+)): (e $\ge$ -s), left‑skew ((-)): (e $\le$ s); true **scale** (s=1).
+A **Gaussian copula** with correlation ($\rho\in{0.00,0.30}$) couples the two margins at each (t) on the **active layer**.
+
+## 1.1 Simulation Design
+
+```{r}
+#| label: design_table
+#| echo: false
+
+B_lab <- "$\\begin{pmatrix} 0.55 & 0.10 \\\\ 0.10 & 0.25 \\end{pmatrix}$"
+n_cond <- nrow(design)
+design_summary <- tibble::tibble(
+  Factor = c("SEM Study (active layer)",
+             "Skew Direction (per margin)",
+             "Copula Correlation ($\\rho$) at active layer",
+             "Time Series Length ($T$)",
+             "VAR(1) Coefficients ($\\mathbf{B}$)",
+             "Replications / cell",
+             "Total Conditions"),
+  Levels = c("A: indicator-skew (measurement), B: latent-skew (innovations)",
+             "`++`, `--`, `+-` (right/right, left/left, right/left)",
+             "0.00, 0.30",
+             "100",
+             paste0("Fixed as ", B_lab),
+             "10",
+             n_cond)
+)
+
+kable(design_summary, caption = "SEM study design (short grid).", escape = FALSE)
+```
+
+# 2. Data loading and preparation
+
+```{r}
+#| label: load_data
+
+# Condition-level helper
+cond <- cond |>
+  mutate(RMSE = sqrt((mean_bias %||% 0)^2 + (emp_sd %||% 0)^2))
+
+# Replication-level MCMC classification
+RHAT_THRESHOLD <- 1.01
+rep_df <- rep_df |>
+  mutate(
+    mcmc_status = dplyr::case_when(
+      is.na(max_rhat) | status != "ok" ~ "Failed/Error",
+      max_rhat > RHAT_THRESHOLD | (n_div %||% 0) > 0 ~ "Problematic",
+      TRUE ~ "Clean"
+    ),
+    mcmc_status = factor(mcmc_status, levels = c("Clean","Problematic","Failed/Error"))
+  )
+```
+
+## 2.1 MCMC overview
+
+```{r, fig.width=12, fig.height=6}
+#| label: mcmc_overview_counts
+mcmc_counts <- rep_df |>
+  distinct(condition_id, rep_id, Model, sem_study, direction, rho, T, mcmc_status) |>
+  count(Model, sem_study, direction, rho, T, mcmc_status, name = "N")
+
+ggplot(mcmc_counts, aes(x = direction, y = N, fill = mcmc_status)) +
+  geom_col() +
+  facet_grid(Model + sem_study ~ rho, labeller = label_both) +
+  scale_fill_manual(values = c("Clean"="#4daf4a","Problematic"="#ff7f00","Failed/Error"="#e41a1c")) +
+  labs(title = "MCMC status counts by model / study / direction / rho",
+       x = "Skew direction", y = "Number of replications", fill = "Status") +
+  theme_standard
+```
+
+```{r, fig.width=12, fig.height=6}
+#| label: mcmc_divergence_distribution
+
+div_data <- rep_df |>
+  filter(param == "rho") |>
+  distinct(condition_id, rep_id, Model, sem_study, direction, rho, T, n_div, mcmc_status) |>
+  filter(mcmc_status != "Failed/Error")
+
+ggplot(div_data, aes(x = direction, y = n_div, color = Model)) +
+  geom_boxplot(outlier.shape = NA, alpha = 0.6) +
+  geom_jitter(width = 0.15, alpha = 0.4, size = 1.5) +
+  facet_grid(sem_study ~ rho, labeller = label_both) +
+  labs(title = "Divergent transitions per run (post‑warmup)",
+       x = "Skew direction", y = "n_div") +
+  theme_standard
+```
+
+# 3. Core parameter accuracy (($\Phi$), ($\mu$), ($\rho$))
+
+We summarize **bias**, **coverage**, and **uncertainty calibration** for the core parameters
+(${\mu_1,\mu_2,\phi_{11},\phi_{12},\phi_{21},\phi_{22},\rho}$).
+
+```{r}
+#| label: metric_helpers
+
+plot_metric <- function(df, metric_col, title, ylab,
+                        use_free_y = FALSE, ylims = NULL) {
+  d <- df |> filter(param %in% core_params, !is.na(.data[[metric_col]]))
+  if (nrow(d) == 0) return(NULL)
+  p <- ggplot(d, aes(x = direction, y = .data[[metric_col]], color = Model, group = Model)) +
+    geom_line(aes(group = Model), position = position_dodge(0.25)) +
+    geom_point(position = position_dodge(0.25), size = 2.2) +
+    facet_grid(param ~ sem_study + rho, labeller = label_both, scales = ifelse(use_free_y,"free_y","fixed")) +
+    labs(title = title, x = "Skew direction", y = ylab, color = "Model") +
+    theme_standard
+  if (metric_col %in% c("mean_rel_bias","sd_bias")) {
+    p <- p + geom_hline(yintercept = 0, linetype = "dashed", color = "grey40")
+  } else if (metric_col == "coverage_95") {
+    p <- p + geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey40")
+  }
+  if (!is.null(ylims)) p <- p + coord_cartesian(ylim = ylims)
+  p
+}
+
+cond_core <- cond |> filter(param %in% core_params)
+```
+
+### 3.1 Relative bias
+
+```{r, fig.width=14, fig.height=12}
+#| label: core_relbias
+plot_metric(cond_core, "mean_rel_bias", "Relative bias (core parameters)", "Mean relative bias", use_free_y = TRUE)
+```
+
+### 3.2 95% coverage
+
+```{r, fig.width=14, fig.height=12}
+#| label: core_coverage
+plot_metric(cond_core, "coverage_95", "Empirical 95% coverage (core parameters)", "Coverage", ylims = c(0.8, 1.0))
+```
+
+### 3.3 SD‑bias (posterior SD – empirical SD)
+
+```{r, fig.width=14, fig.height=12}
+#| label: core_sdbias
+plot_metric(cond_core, "sd_bias", "SD‑bias (posterior SD minus empirical SD)", "SD‑bias", use_free_y = TRUE)
+```
+
+# 4. Marginal scale parameters (($\sigma_{\exp}$))
+
+Both EI and EL estimate ($\sigma_{\exp}$) but on different layers:
+
+* **EI:** ($\sigma_{\exp}$) is the **measurement‑error** scale.
+* **EL:** ($\sigma_{\exp}$) is the **innovation** scale.
+
+Truth is ($\sigma_{\exp}=1$) for each margin. Bias near zero and coverage near 0.95 indicate good calibration.
+
+```{r, fig.width=14, fig.height=10}
+#| label: sigma_exp_section
+cond_sigma <- cond |> filter(param %in% c("sigma_exp[1]","sigma_exp[2]"))
+
+p1 <- plot_metric(cond_sigma, "mean_rel_bias", "Relative bias (sigma_exp)", "Mean relative bias", use_free_y = TRUE)
+p2 <- plot_metric(cond_sigma, "coverage_95",   "Empirical 95% coverage (sigma_exp)", "Coverage", ylims = c(0.8, 1.0))
+
+print(p1); print(p2)
+```
+
+# 5. Clean vs. Problematic: does it matter for inference?
+
+We re‑aggregate replication‑level metrics **by MCMC status** (Clean vs. Problematic) to check robustness.
+
+```{r}
+#| label: aggregate_by_status
+
+aggregate_by_status <- function(df) {
+  df |>
+    filter(mcmc_status != "Failed/Error", param %in% core_params) |>
+    group_by(condition_id, Model, param, mcmc_status, sem_study, direction, rho, T) |>
+    summarise(
+      N_valid      = n(),
+      mean_rel_bias= mean(rel_bias, na.rm = TRUE),
+      coverage_95  = mean(cover95, na.rm = TRUE),
+      mean_post_sd = mean(post_sd, na.rm = TRUE),
+      emp_sd       = sd(post_mean, na.rm = TRUE),
+      mean_bias    = mean(bias, na.rm = TRUE),
+      .groups      = "drop"
+    ) |>
+    mutate(
+      emp_sd = ifelse(is.na(emp_sd), 0, emp_sd),
+      sd_bias = mean_post_sd - emp_sd,
+      RMSE = sqrt((mean_bias %||% 0)^2 + (emp_sd %||% 0)^2)
+    )
+}
+
+cond_status <- aggregate_by_status(rep_df)
+```
+
+```{r, fig.width=12, fig.height=10}
+#| label: coverage_status_split
+
+status_overview <- cond_status |>
+  group_by(Model, param, sem_study, rho, mcmc_status) |>
+  summarise(mean_coverage = mean(coverage_95, na.rm = TRUE), .groups = "drop")
+
+ggplot(status_overview,
+       aes(x = mcmc_status, y = mean_coverage, fill = mcmc_status)) +
+  geom_col() +
+  facet_grid(Model + sem_study ~ param + rho, labeller = label_both) +
+  geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey40") +
+  scale_fill_manual(values = c("Clean"="#4daf4a","Problematic"="#ff7f00")) +
+  labs(title = "Coverage split by MCMC status (core parameters)",
+       x = "MCMC status", y = "Mean coverage") +
+  theme_standard +
+  theme(legend.position = "none")
+```
+
+# 6. Export tidy tables
+
+```{r}
+#| label: export_tables
+
+# 1) Main condition-level summary (with design joined)
+export_cond <- cond |>
+  dplyr::select(condition_id, Model, sem_study, direction, rho, T, param,
+                N_valid, N_truth_avail, mean_rel_bias, coverage_95, RMSE,
+                mean_post_sd, emp_sd, sd_bias, mean_n_div, prop_div, mean_rhat)
+
+readr::write_csv(export_cond, file.path(EXPORT_DIR, "sem_analysis_conditions.csv"))
+
+# 2) Coverage by MCMC status (core only)
+export_status <- cond_status |>
+  dplyr::select(Model, sem_study, direction, rho, T, param, mcmc_status,
+                N_valid, mean_rel_bias, coverage_95, RMSE, mean_post_sd, emp_sd, sd_bias)
+
+readr::write_csv(export_status, file.path(EXPORT_DIR, "sem_analysis_status_split_core.csv"))
+```
+
+# 7. Notes on interpretation
+
+* **Layer‑specific copula:** ($\rho$) is identified at the **active layer**. Fitting the “wrong” model (EI on EL data, or EL on EI data) can distort the PIT on that layer and bias ($\hat{\rho}$) toward zero (attenuation).
+* **One‑sided support:** exponential margins imply hard bounds (e.g., right‑skew requires (e $\ge$ -s)). Chains that frequently propose off‑support values tend to report divergences; nevertheless, coverage for ($\Phi$) and ($\mu$) can remain adequate if mixing elsewhere is good.
+* **Scales:** both EI and EL estimate ($\sigma_{\exp}[j]$) with truth (=1); bias/coverage for these parameters help diagnose whether the model is matching the marginal one‑sidedness.
+
+
