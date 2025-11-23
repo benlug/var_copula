@@ -1,8 +1,5 @@
-###########################################################################
-# run_pipeline_SEM.R — Short SEM Skewness Study (A: indicator, B: latent)
-# Mirrors Study 2 pipeline layout and toggles.
-###########################################################################
-
+# run_pipeline_SEM.R — Study 5 : SEM Skewness (A: indicator, B: latent)
+# Pipe: simulate → (optional) checks → fit → analyze
 suppressPackageStartupMessages({
   library(dplyr)
   library(purrr)
@@ -14,47 +11,52 @@ suppressPackageStartupMessages({
 })
 
 ## -- folders -------------------------------------------------------------
-tryCatch({
-  BASE_DIR <- this.path::this.dir()
-  setwd(BASE_DIR)
-}, error = function(e) {
-  message("Could not set directory using this.path::this.dir(). Using getwd().")
-  BASE_DIR <- getwd()
-})
+tryCatch(
+  {
+    BASE_DIR <- this.path::this.dir()
+    setwd(BASE_DIR)
+  },
+  error = function(e) {
+    message("Could not set directory with this.path; using getwd().")
+    BASE_DIR <- getwd()
+  }
+)
 
-DATA_DIR   <- file.path(BASE_DIR, "data")
+DATA_DIR <- file.path(BASE_DIR, "data")
 CHECKS_DIR <- file.path(BASE_DIR, "checks_sem")
-FITS_DIR   <- file.path(BASE_DIR, "fits_sem")
+FITS_DIR <- file.path(BASE_DIR, "fits_sem")
 RESULT_DIR <- file.path(BASE_DIR, "results_sem")
-STAN_DIR   <- file.path(BASE_DIR, "stan")        # <-- was missing; needed by fit_models
+STAN_DIR <- file.path(BASE_DIR, "stan")
 
-dir.create(DATA_DIR,   FALSE, TRUE)
+dir.create(DATA_DIR, FALSE, TRUE)
 dir.create(CHECKS_DIR, FALSE, TRUE)
-dir.create(FITS_DIR,   FALSE, TRUE)
+dir.create(FITS_DIR, FALSE, TRUE)
 dir.create(RESULT_DIR, FALSE, TRUE)
-dir.create(STAN_DIR,   FALSE, TRUE)
+dir.create(STAN_DIR, FALSE, TRUE)
 
 ## -- resume flags --------------------------------------------------------
 START_COND <- as.integer(Sys.getenv("START_COND", "1"))
-START_REP  <- as.integer(Sys.getenv("START_REP",  "1"))
-message(">>> SEM Pipeline Start. Resume: Condition=", START_COND, ", Replication=", START_REP)
+START_REP <- as.integer(Sys.getenv("START_REP", "1"))
+message(">>> SEM Pipeline Start. Condition=", START_COND, "  Replication=", START_REP)
 
 ## -- toggles & constants -------------------------------------------------
-RUN_SIM          <- TRUE
-RUN_CHECKS       <- TRUE
-RUN_FITTING      <- TRUE
-RUN_ANALYSIS     <- TRUE
-RUN_VISUALIZATION<- FALSE
+RUN_SIM <- TRUE
+RUN_CHECKS <- TRUE
+RUN_FITTING <- TRUE
+RUN_ANALYSIS <- TRUE
+RUN_VISUALIZATION <- FALSE
 
-REPS_PER_CELL <- 100
-NUM_CORES_OUT <- 26 #max(1, parallel::detectCores() - 1)
-set.seed(2124042)
+REPS_PER_CELL <- 90
+NUM_CORES_OUT <- max(1, parallel::detectCores() - 1)
+set.seed(2042)
 
 ## =======================================================================
-## Design grid (short, per Study-4 brief)  -------------------------------
+## Design grid ------------------------------------------------------------
 ## =======================================================================
-B_mat <- matrix(c(0.55, 0.10,
-                  0.10, 0.25), 2, 2, byrow = TRUE)
+B_mat <- matrix(c(
+  0.55, 0.10,
+  0.10, 0.25
+), 2, 2, byrow = TRUE)
 
 assign_skew <- function(dir_flag) {
   s1 <- if (substr(dir_flag, 1, 1) == "+") +1L else -1L
@@ -65,14 +67,14 @@ assign_skew <- function(dir_flag) {
 design_grid <- expand.grid(
   sem_study = c("A_indicator", "B_latent"),
   direction = c("++", "+-"),
-  T         = 100,
-  rho       = c(0.30),
+  T = c(100, 200),
+  rho = c(0.30),
   stringsAsFactors = FALSE
 ) |>
-  mutate(
+  dplyr::mutate(
     condition_id = dplyr::row_number(),
     n_reps       = REPS_PER_CELL,
-    phi_matrix   = list(B_mat)[rep(1, n())],
+    phi_matrix   = list(B_mat)[rep(1, dplyr::n())],
     skew_dir     = purrr::map(direction, assign_skew)
   )
 
@@ -94,16 +96,12 @@ if (RUN_SIM) {
 }
 
 ## =======================================================================
-## 2 · Checks -------------------------------------------------------------
+## 2 · Checks (DGP visualizations) ----------------------------------------
 ## =======================================================================
 if (RUN_CHECKS) {
   message("\n>>> Running Checks …")
   source("check_simulations_SEM.R", local = TRUE)
-  run_post_sim_checks_sem(
-    DATA_DIR   = DATA_DIR,
-    FITS_DIR   = FITS_DIR,
-    CHECKS_DIR = CHECKS_DIR
-  )
+  run_post_sim_checks_sem(DATA_DIR, CHECKS_DIR)
 }
 
 ## =======================================================================
@@ -113,18 +111,18 @@ if (RUN_FITTING) {
   message("\n>>> Running Stan Fitting (SEM) …")
   source("fit_models_SEM.R", local = TRUE)
   fit_sem_models(
-    data_dir       = DATA_DIR,
-    fits_dir       = FITS_DIR,
-    stan_dir       = STAN_DIR,      # now defined
-    results_dir    = RESULT_DIR,
-    chains         = 4,
-    iter           = 3000,
-    warmup         = 1500,
-    adapt_delta    = 0.9,
-    max_treedepth  = 12,
-    cores_outer    = NUM_CORES_OUT,
-    start_condition= START_COND,
-    start_rep      = START_REP
+    data_dir        = DATA_DIR,
+    fits_dir        = FITS_DIR,
+    stan_dir        = STAN_DIR,
+    results_dir     = RESULT_DIR,
+    chains          = 4,
+    iter            = 3000,
+    warmup          = 1500,
+    adapt_delta     = 0.90, # per your request
+    max_treedepth   = 10, # per your request
+    cores_outer     = NUM_CORES_OUT,
+    start_condition = START_COND,
+    start_rep       = START_REP
   )
 }
 
@@ -137,7 +135,7 @@ if (RUN_ANALYSIS) {
 }
 
 if (RUN_VISUALIZATION) {
-  message("\n>>> Visualization skipped (add later if wanted).")
+  message("\n>>> Visualization skipped (handled in analysis doc).")
 }
 
 message("\n>>> SEM Pipeline COMPLETE.")

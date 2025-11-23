@@ -1,56 +1,29 @@
-###########################################################################
-# analysis_sem.R — Aggregation & metrics for SEM Study A/B (EI vs EL)
-# Inputs expected:
-#   data/sim_conditions_sem.rds
-#   results_sem/summary_replications_sem.csv
-#   results_sem/summary_conditions_sem.csv
-# Outputs:
-#   results_sem/summary_replications_sem.csv   (rewritten)
-#   results_sem/summary_conditions_sem.csv     (rewritten)
-###########################################################################
-
+# analysis_sem.R — Summaries for Study 5 (avoid select() masking)
 suppressPackageStartupMessages({
-  library(rstan)
-  library(dplyr)
-  library(tidyr)
-  library(readr)
-  library(stringr)
+  library(rstan); library(dplyr); library(tidyr); library(readr); library(stringr)
 })
 
-# --- folders -------------------------------------------------------------
 BASE_DIR <- getwd()
 DATA_DIR <- file.path(BASE_DIR, "data")
 FITS_DIR <- file.path(BASE_DIR, "fits_sem")
 RES_DIR  <- file.path(BASE_DIR, "results_sem")
 dir.create(RES_DIR, showWarnings = FALSE, recursive = TRUE)
 
-# --- helpers -------------------------------------------------------------
 safe_read <- function(p) tryCatch(readRDS(p), error = function(e) e)
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
-# FIXED: integer-safe, robust to odd sampler payloads
 count_div <- function(fit) {
   if (!inherits(fit, "stanfit")) return(NA_integer_)
-  sp <- try(get_sampler_params(fit, inc_warmup = FALSE), silent = TRUE)
-  if (inherits(sp, "try-error") || !length(sp)) return(NA_integer_)
-  per_chain <- vapply(
-    sp,
-    function(ch) {
-      if (!is.matrix(ch) || !"divergent__" %in% colnames(ch)) return(0L)
-      as.integer(sum(as.integer(ch[, "divergent__"]), na.rm = TRUE))
-    },
-    integer(1L)
-  )
-  as.integer(sum(per_chain))
+  sp <- try(get_sampler_params(fit, FALSE), silent = TRUE)
+  if (inherits(sp, "try-error") || length(sp) == 0) return(NA_integer_)
+  as.integer(sum(vapply(sp, function(x) as.integer(sum(x[, "divergent__"])), 0L)))
 }
-
 max_rhat <- function(fit) {
   if (!inherits(fit, "stanfit")) return(NA_real_)
   s <- try(summary(fit)$summary, silent = TRUE)
   if (inherits(s, "try-error") || is.null(s) || !("Rhat" %in% colnames(s))) return(NA_real_)
   suppressWarnings(max(s[, "Rhat"], na.rm = TRUE))
 }
-
 quick_summary <- function(fit, want_full) {
   base <- unique(sub("\\[.*$", "", want_full))
   keep <- intersect(base, fit@model_pars)
@@ -63,17 +36,12 @@ quick_summary <- function(fit, want_full) {
     dplyr::filter(param %in% want_full)
 }
 
-# --- parameter sets ------------------------------------------------------
 CORE  <- c("mu[1]","mu[2]","phi11","phi12","phi21","phi22","rho")
 EXTRA <- c("sigma_exp[1]","sigma_exp[2]")
 
-# --- enumerate fits ------------------------------------------------------
 fits <- list.files(FITS_DIR, "^fit_(EI|EL)_cond\\d+_rep\\d+\\.rds$", full.names = TRUE)
-if (length(fits) == 0) {
-  stop("No SEM fits found in ", FITS_DIR, ". Did fitting run?")
-}
+if (!length(fits)) stop("No SEM fits found in ", FITS_DIR)
 
-# --- simulation cache ----------------------------------------------------
 sim_env <- new.env(parent = emptyenv())
 load_sim <- function(cid, rid) {
   key <- sprintf("%03d_%03d", cid, rid)
@@ -104,7 +72,6 @@ for (i in seq_along(fits)) {
     next
   }
 
-  # ground truth for standardized design
   truth <- c(
     `mu[1]` = 0, `mu[2]` = 0,
     phi11 = sim$phi_matrix[1,1], phi12 = sim$phi_matrix[1,2],
@@ -114,8 +81,8 @@ for (i in seq_along(fits)) {
   )
 
   want <- c(CORE, EXTRA)
-  sm   <- if (stat=="ok") quick_summary(fit, want) else NULL
-  rhat <- if (stat=="ok") max_rhat(fit) else NA_real_
+  sm   <- if (stat == "ok") quick_summary(fit, want) else NULL
+  rhat <- if (stat == "ok") max_rhat(fit) else NA_real_
   ndiv <- count_div(fit)
 
   rows[[i]] <- if (is.null(sm)) {
@@ -123,62 +90,52 @@ for (i in seq_along(fits)) {
            param = NA_character_, status = stat, n_div = ndiv, max_rhat = rhat)
   } else {
     sm |>
-      mutate(
+      dplyr::mutate(
         truth    = truth[param],
         bias     = ifelse(is.na(truth), NA_real_, mean - truth),
         rel_bias = ifelse(is.na(truth), NA_real_,
-                          ifelse(abs(truth) < .Machine$double.eps, bias, bias/abs(truth))),
+                          ifelse(abs(truth) < .Machine$double.eps, bias, bias / abs(truth))),
         cover95  = ifelse(is.na(truth), NA, (`2.5%` <= truth & `97.5%` >= truth)),
         model    = model_code, condition_id = cid, rep_id = rid,
         n_div    = ndiv, max_rhat = rhat, status = stat
       ) |>
       dplyr::select(model, condition_id, rep_id, param,
-             post_mean = mean, post_sd = sd, l95 = `2.5%`, u95 = `97.5%`,
-             truth, bias, rel_bias, cover95, n_div, max_rhat, status)
+                    post_mean = mean, post_sd = sd, l95 = `2.5%`, u95 = `97.5%`,
+                    truth, bias, rel_bias, cover95, n_div, max_rhat, status)
   }
-
   if (i %% 300 == 0) message(sprintf("... processed %d/%d", i, length(fits)))
 }
 
-rep_tbl <- bind_rows(rows)
-
-# normalize logical cover to numeric
-if ("cover95" %in% names(rep_tbl) && is.logical(rep_tbl$cover95)) {
-  rep_tbl$cover95 <- as.numeric(rep_tbl$cover95)
-}
-
-# write replication-level summary
-write_csv(rep_tbl, file.path(RES_DIR, "summary_replications_sem.csv"))
+rep_tbl <- dplyr::bind_rows(rows)
+if ("cover95" %in% names(rep_tbl) && is.logical(rep_tbl$cover95)) rep_tbl$cover95 <- as.numeric(rep_tbl$cover95)
+readr::write_csv(rep_tbl, file.path(RES_DIR, "summary_replications_sem.csv"))
 
 message("Fit status summary:")
 print(table(Status = rep_tbl$status, Model = rep_tbl$model, useNA = "ifany"))
 
-# condition-level aggregation
 good <- rep_tbl$status == "ok" & !is.na(rep_tbl$param)
 if (any(good)) {
   cond <- rep_tbl |>
-    filter(good) |>
-    group_by(condition_id, model, param) |>
-    summarise(
-      N_valid       = n(),
+    dplyr::filter(good) |>
+    dplyr::group_by(condition_id, model, param) |>
+    dplyr::summarise(
+      N_valid       = dplyr::n(),
       N_truth_avail = sum(!is.na(truth)),
       mean_bias     = mean(bias, na.rm = TRUE),
       mean_rel_bias = mean(rel_bias, na.rm = TRUE),
       coverage_95   = mean(cover95, na.rm = TRUE),
       mean_post_sd  = mean(post_sd, na.rm = TRUE),
       emp_sd        = sd(post_mean, na.rm = TRUE),
-      sd_bias       = mean_post_sd - ifelse(is.na(emp_sd), 0, emp_sd),
+      sd_bias       = mean_post_sd - emp_sd,
       mean_n_div    = mean(n_div, na.rm = TRUE),
       prop_div      = mean(n_div > 0, na.rm = TRUE),
       mean_rhat     = mean(max_rhat, na.rm = TRUE),
-      .groups = "drop"
+      .groups       = "drop"
     ) |>
-    mutate(
-      emp_sd = ifelse(is.na(emp_sd), 0, emp_sd),
-      RMSE   = sqrt((mean_bias %||% 0)^2 + (emp_sd %||% 0)^2)
-    )
+    dplyr::mutate(across(where(is.numeric), ~ ifelse(is.nan(.), NA_real_, .)),
+                  RMSE = sqrt((mean_bias %||% 0)^2 + (emp_sd %||% 0)^2))
 
-  write_csv(cond, file.path(RES_DIR, "summary_conditions_sem.csv"))
+  readr::write_csv(cond, file.path(RES_DIR, "summary_conditions_sem.csv"))
   message("✓ wrote ", nrow(cond), " rows to results_sem/summary_conditions_sem.csv")
 } else {
   message("⚠ no usable draws found.")
