@@ -50,8 +50,8 @@ transformed parameters {
 
     for (i in 1:2) {
       for (t in 1:(T-1)) g[t] = -skew_direction[i] * z[t,i];
-      b[i] = smooth_max(g, kappa);              // >= max_t(-s * z)
-      sigma_exp[i] = b[i] + exp(eta[i]) + 1e-9; // > 0 with epsilon
+      b[i] = fmax(0, smooth_max(g, kappa));     // clamp to avoid negative scale
+      sigma_exp[i] = b[i] + exp(eta[i]) + 1e-6; // strictly > 0
     }
   }
 }
@@ -87,4 +87,3 @@ model {
 generated quantities {
   matrix[2,2] Phi = Phi_T';
 }
-

@@ -1,4 +1,6 @@
 # fit_models_SEM.R — Fit Study 5 models with feasibility-lift Stan
+# CORRECTED VERSION — Bug fixes applied
+
 fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
                            chains = 4, iter = 3000, warmup = 1500,
                            adapt_delta = 0.90, max_treedepth = 10,
@@ -50,7 +52,7 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
     EL = model_cache(file.path(stan_dir, "sem_B_latent_EG.stan"), "SEM_Latent_EG")
   )
 
-  ## init helpers (feasible; no eta in the fixed-scale models)
+  ## init helpers (feasible)
   make_init_EI <- function(y, skew_dir, chain_id) {
     set.seed(SEED_R + chain_id)
     ylag <- rbind(c(0, 0), y[-nrow(y), , drop = FALSE])
@@ -72,7 +74,11 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
     )
   }
 
-
+  # ============================================================================
+  # FIX: Corrected make_init_EL function
+  # Bug 1: Was using 'rho' instead of 'rho_raw' (Stan parameter name mismatch)
+  # Bug 2: Was missing 'eta' parameter entirely
+  # ============================================================================
   make_init_EL <- function(y, skew_dir, chain_id) {
     set.seed(SEED_R + chain_id)
     ylag <- rbind(c(0, 0), y[-nrow(y), , drop = FALSE])
@@ -84,8 +90,12 @@ fit_sem_models <- function(data_dir, fits_dir, stan_dir, results_dir,
     phi22 <- if (!inherits(f2, "try-error")) coef(f2)[3] else 0.25
     list(
       mu = c(0, 0),
-      phi11 = phi11, phi12 = phi12, phi21 = phi21, phi22 = phi22,
-      rho = runif(1, -0.2, 0.2)
+      phi11 = max(min(phi11, 0.9), -0.9),
+      phi12 = max(min(phi12, 0.9), -0.9),
+      phi21 = max(min(phi21, 0.9), -0.9),
+      phi22 = max(min(phi22, 0.9), -0.9),
+      eta = rep(log(1), 2),   # give more slack to keep sigma_exp positive
+      rho_raw = rnorm(1, 0, 0.5) # FIX: Renamed from 'rho' to 'rho_raw'
     )
   }
 
