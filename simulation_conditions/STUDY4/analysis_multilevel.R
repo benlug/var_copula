@@ -25,7 +25,7 @@ count_div <- function(fit) {
   if (inherits(sp, "try-error") || length(sp) == 0) {
     return(NA_integer_)
   }
-  sum(vapply(sp, function(x) sum(x[, "divergent__"]), 0L))
+  sum(vapply(sp, function(x) as.integer(sum(x[, "divergent__"])), integer(1)))
 }
 max_rhat <- function(fit) {
   if (!inherits(fit, "stanfit")) {
@@ -206,6 +206,9 @@ for (k in seq_along(fits)) {
 }
 
 rep_tbl <- bind_rows(rows)
+
+# Ensure unit column exists even when no unit-level summaries were produced
+if (!"unit" %in% names(rep_tbl)) rep_tbl$unit <- NA_integer_
 
 out_rep <- file.path(RES_DIR, "summary_replications_ml.csv")
 write_csv(rep_tbl, out_rep)

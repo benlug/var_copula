@@ -1,0 +1,106 @@
+---
+title: "STUDY4 Multilevel (ML_min) Summary"
+format:
+  html:
+    toc: true
+    number-sections: false
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+```{r setup}
+library(dplyr)
+library(readr)
+library(tidyr)
+library(ggplot2)
+library(stringr)
+library(scales)
+
+base_dir <- here::here("simulation_conditions", "STUDY4")
+rep_path <- file.path(base_dir, "results", "summary_replications_ml.csv")
+cond_path <- file.path(base_dir, "results", "summary_conditions_ml.csv")
+
+if (!file.exists(rep_path)) stop("Missing rep-level summary: ", rep_path)
+if (!file.exists(cond_path)) stop("Missing condition-level summary: ", cond_path)
+
+rep_tbl <- read_csv(rep_path, show_col_types = FALSE)
+cond_tbl <- read_csv(cond_path, show_col_types = FALSE)
+```
+
+## Fit Status
+
+```{r status}
+status_tbl <- rep_tbl |> count(model, status, name = "n")
+status_tbl
+```
+
+```{r status-plot, fig.width=6, fig.height=3}
+ggplot(status_tbl, aes(status, n, fill = model)) +
+  geom_col(position = position_dodge(width = 0.6)) +
+  labs(title = "Fit statuses", x = NULL, y = "Count") +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_minimal(base_size = 12)
+```
+
+## Global Parameters (bias & coverage)
+
+```{r globals}
+params_to_show <- c("phi11", "phi12", "phi21", "phi22", "rho",
+                    "sigma[1]", "sigma[2]", "sigma_exp[1]", "sigma_exp[2]",
+                    "mu_bar[1]", "mu_bar[2]", "tau_mu[1]", "tau_mu[2]")
+
+cond_glob <- cond_tbl |>
+  filter(param %in% params_to_show) |>
+  mutate(param = factor(param, levels = params_to_show),
+         condition_id = factor(condition_id))
+
+cond_glob |> select(condition_id, model, param, mean_bias, coverage_95, N_valid) |>
+  arrange(model, condition_id, param)
+```
+
+```{r bias-plot, fig.width=8, fig.height=4}
+ggplot(cond_glob, aes(param, mean_bias, fill = model)) +
+  geom_hline(yintercept = 0, color = "grey50") +
+  geom_col(position = position_dodge(width = 0.7)) +
+  facet_wrap(~ condition_id, nrow = 1) +
+  labs(title = "Mean bias by parameter and condition", x = NULL, y = "Mean bias") +
+  scale_fill_brewer(palette = "Set2") +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r coverage-plot, fig.width=8, fig.height=4}
+ggplot(cond_glob, aes(param, coverage_95, fill = model)) +
+  geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey40") +
+  geom_col(position = position_dodge(width = 0.7)) +
+  facet_wrap(~ condition_id, nrow = 1) +
+  labs(title = "95% coverage by parameter and condition", x = NULL, y = "Coverage") +
+  scale_fill_brewer(palette = "Set1") +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  theme_minimal(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+## Unit-level Intercepts
+
+```{r units}
+has_units <- any(!is.na(rep_tbl$unit))
+if (has_units) {
+  unit_df <- rep_tbl |>
+    filter(!is.na(unit), param %in% c("mu[1]", "mu[2]")) |>
+    group_by(model, condition_id, param) |>
+    summarise(mean_bias = mean(bias, na.rm = TRUE),
+              coverage_95 = mean(cover95, na.rm = TRUE),
+              N = n(), .groups = "drop")
+  unit_df
+} else {
+  cat("(No unit-level summaries present in rep-level CSV.)")
+}
+```
+
+## Notes
+
+- This report reads the CSV outputs created by `analysis_multilevel.R` in `results/`.
+- Adjust `params_to_show` if you add/remove parameters in future models.

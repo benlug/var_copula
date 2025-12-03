@@ -32,20 +32,22 @@ dir.create(FITS_DIR, FALSE, TRUE)
 dir.create(RESULT_DIR, FALSE, TRUE)
 
 ## -- toggles & constants -------------------------------------------------
+# Speed-friendly defaults: fewer reps and leaner fits for development. Override
+# with env vars when running the full study.
 RUN_SIM <- TRUE
-RUN_CHECKS <- TRUE
+RUN_CHECKS <- as.logical(Sys.getenv("RUN_CHECKS", "TRUE"))
 RUN_FIT <- TRUE
-RUN_ANAL <- TRUE
+RUN_ANAL <- as.logical(Sys.getenv("RUN_ANAL", "TRUE"))
 
-REPS_PER_CELL <- as.integer(Sys.getenv("REPS_PER_CELL", "50")) # pilot size
-NUM_CORES_OUT <- max(1, parallel::detectCores() - 1)
+REPS_PER_CELL <- as.integer(Sys.getenv("REPS_PER_CELL", "30")) # dev size; set higher for full runs
+NUM_CORES_OUT <- max(1, 30) # parallel::detectCores() - 1
 set.seed(2026)
 
 ## -- pilot design: 2 conditions -----------------------------------------
 # fixed pieces
-N_UNITS <- 50L
-T_SER <- 100L
-BURN_IN <- 30L
+N_UNITS <- 40
+T_SER <- 70
+BURN_IN <- 50
 rho_val <- 0.50
 Phi_A <- matrix(c(0.40, 0.10, 0.10, 0.40), 2, 2, byrow = TRUE) # always stable here
 direction <- "++"
@@ -113,8 +115,11 @@ if (RUN_FIT) {
     fits_dir = FITS_DIR,
     stan_dir = STAN_DIR,
     results_dir = RESULT_DIR,
-    chains = 4, iter = 4000, warmup = 2000,
-    adapt_delta = 0.8, max_treedepth = 10,
+    chains = as.integer(Sys.getenv("CHAINS", "4")),
+    iter = as.integer(Sys.getenv("ITER", "3000")),
+    warmup = as.integer(Sys.getenv("WARMUP", "1500")),
+    adapt_delta = as.numeric(Sys.getenv("ADAPT_DELTA", "0.9")),
+    max_treedepth = as.integer(Sys.getenv("MAX_TD", "10")),
     cores_outer = NUM_CORES_OUT,
     start_condition = as.integer(Sys.getenv("START_COND", "1")),
     start_rep = as.integer(Sys.getenv("START_REP", "1"))
