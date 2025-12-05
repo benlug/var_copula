@@ -1,0 +1,7 @@
+Metric definitions:
+  relative bias  = (posterior mean − truth) / |truth| (if truth!=0, else bias)
+  coverage_95    = proportion of reps where 95% CI covers truth
+  posterior SD   = mean posterior SD across reps
+  SD‑Bias        = Mean(Posterior SD) − Empirical SD(Posterior Means)
+  n_div          = divergent transitions (post‑warm‑up)
+  clean          = no divergence & Rhat ≤ 1.01

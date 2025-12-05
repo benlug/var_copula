@@ -35,9 +35,9 @@ parameters {
   real<lower=-1, upper=1> phi21;
   real<lower=-1, upper=1> phi22;
 
-  // Skew‑normal parameters (Centered Parameterization approach)
+  // Skew-normal parameters (Centered Parameterization approach)
   vector<lower=0>[2] omega; // scale (>0)
-  // Bounded shape ratio (−1,1) provides stable sampling
+  // Bounded shape ratio (-1,1) provides stable sampling
   vector<lower=-1, upper=1>[2] delta;     
 
   // Copula correlation
@@ -77,9 +77,13 @@ model {
   phi21 ~ normal(0, 0.5);
   phi22 ~ normal(0, 0.5);
 
-  omega ~ normal(0, 1);
+  omega ~ normal(0, 1);   // Half-normal (omega > 0)
   
-  rho   ~ normal(0, 0.5);
+  // Prior on delta: regularizes toward symmetry while allowing substantial skewness
+  // This prior places more mass near 0 (symmetric) but permits values across (-1, 1)
+  delta ~ normal(0, 0.5);
+  
+  rho ~ normal(0, 0.5);
 
   // Vectorized calculation of residuals
   predictions = rep_matrix(mu, T-1) + y[1:T-1, ] * Phi_T;
@@ -98,7 +102,6 @@ model {
     real u2 = skew_normal_cdf(res[2], xi[2], omega[2], alpha[2]);
     
     // 3. Add copula log density
-    // FIX: Call the renamed function
     target += gaussian_copula_ld(u1, u2, rho);
   }
 }

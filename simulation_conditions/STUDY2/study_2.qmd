@@ -1,5 +1,5 @@
 ---
-title: "Study 2: Comparative Performance of Gaussian and Exponential Copula VAR Models Under Exponential Marginals"
+title: "Study 2: Comparative Performance of Normal-Gaussian and Exponential-Gaussian Copula VAR Models Under Exponential Marginals"
 format:
   html:
     toc: true
@@ -60,33 +60,80 @@ if (!all(file.exists(unlist(files)))) {
 
 ## 0.1 Computational Stability
 
-The EG model, unlike the SN model from Study 1, is computationally stable.
+The NG model achieves 100% "Clean" MCMC runs across all conditions. The EG model shows more "Problematic" runs (divergences) than NG, particularly at small sample sizes ($T = 50$), but remains substantially more stable than the SG model from Study 1 under extreme misspecification. The EG divergences are limited in magnitude and do not appear to compromise statistical validity.
 
 ## 0.2 Model Performance
 
 The EG model, with correctly specified marginal distributions, demonstrates excellent parameter recovery across all experimental conditions. Point estimates exhibit negligible bias for VAR dynamics ($\Phi$), copula correlation ($\rho$), and intercepts ($\mu$), with empirical coverage maintaining nominal 95% rates and properly calibrated posterior uncertainty (SD-Bias $\approx 0$). 
 
-The NG baseline, while computationally stable, exhibits systematic downward bias in copula parameter estimation, with relative bias approaching -0.5 for $\rho$ at small sample sizes. This attenuation bias manifests primarily in dependence structure estimation rather than marginal scale parameters, where deviations remain minimal (|bias| < 0.03).
+The NG baseline, while computationally stable, exhibits systematic downward bias in copula parameter estimation, with relative bias approaching -2.0 for $\rho$ at small sample sizes. This severe attenuation bias manifests primarily in dependence structure estimation rather than marginal scale parameters, where deviations remain minimal (|bias| < 0.03). The mechanism is identical to Study 1's `extremeCHI` condition: PIT distortion from marginal misspecification compresses tail observations toward the center of the copula space, attenuating perceived dependence.
 
 # 1. Introduction
 
 This simulation study evaluates the comparative performance of two Bayesian VAR(1) copula models under exponentially distributed innovations:
   
 - **Normal-Gaussian (NG)**: Baseline assuming Gaussian marginals (misspecified)
-- **Exponential-Gaussian (EG)**: Correctly specified model
+- **Exponential-Gaussian (EG)**: Correctly specified model with Exponential marginals
 
-### 1.1 Data Generating Process
+## 1.1 Data Generating Process
 
 The study employs a bivariate VAR(1) specification:
   
-  $$Y_t = \mu + \Phi Y_{t-1} + \epsilon_t, \quad t = 2, \ldots, T$$
+$$Y_t = \mu + \Phi Y_{t-1} + \epsilon_t, \quad t = 2, \ldots, T$$
 
 with $\mu = 0$ throughout. The innovation vector $\epsilon_t = (\epsilon_{1,t}, \epsilon_{2,t})^\top$ features:
+
 - **Marginal distributions**: Exponential, standardized to mean 0 and standard deviation 1 through affine transformation
 - **Dependence structure**: Gaussian copula with correlation parameter $\rho$
 - **Directional flexibility**: Sign adjustments enable positive (+), negative (-), or mixed (+/-) skewness configurations
 
-### 1.2. Simulation Design
+::: {.callout-note}
+**Exponential Distribution Properties**
+
+The Exponential(rate=1) distribution has mean 1 and standard deviation 1. After standardization (subtracting mean, dividing by SD), the innovations have:
+
+| Property | Value |
+|:---------|:------|
+| Mean | 0 (by construction) |
+| Variance | 1 (by construction) |
+| Skewness $\gamma_1$ | 2 |
+| Excess Kurtosis $\gamma_2$ | 6 |
+
+For comparison with Study 1:
+
+| Distribution | Skewness | Excess Kurtosis |
+|:-------------|:--------:|:---------------:|
+| Exponential (this study) | 2.0 | 6 |
+| $\chi^2(1)$ (Study 1 extremeCHI) | 2.83 | 12 |
+| Skew-Normal (max) | 0.995 | 0.869 |
+
+The Exponential distribution is less extreme than $\chi^2(1)$ but still substantially non-normal, providing a middle ground for testing model robustness.
+:::
+
+::: {.callout-note}
+**EG Model Parameterization: Feasibility-Constrained Scale**
+
+The EG model uses a sophisticated reparameterization to handle the bounded support of the Exponential distribution. For each margin $i$:
+
+1. **Feasibility bound**: $b_i = \max_t(-s_i \cdot \text{res}_{t,i})$ where $s_i \in \{-1, +1\}$ is the skew direction
+2. **Scale parameter**: $\sigma_{\text{exp},i} = b_i + \exp(\eta_i)$
+
+This ensures $\sigma_{\text{exp},i} > b_i$, which guarantees that all shifted residuals $x_{\text{shifted}} = \sigma_{\text{exp}} + s_i \cdot \text{res}$ remain positive (as required for Exponential support).
+
+The unconstrained parameter $\eta_i$ is assigned a normal(0, 1) prior, while an induced lognormal(0, 0.5) prior on $\sigma_{\text{exp}}$ is implemented via change-of-variables with appropriate Jacobian adjustment.
+:::
+
+::: {.callout-note}
+**Numerical Stability in Copula Evaluation**
+
+The Gaussian copula density requires evaluating $\Phi^{-1}(u)$ where $u = F(\epsilon)$ is the probability integral transform. When $u$ approaches 0 or 1, $\Phi^{-1}(u)$ diverges to $\pm\infty$, causing numerical overflow. To prevent this, we apply boundary clamping:
+$$
+u_{\text{clamped}} = \max(\varepsilon, \min(1-\varepsilon, u)), \quad \varepsilon = 10^{-9}
+$$
+This affects only the most extreme quantiles and has negligible impact on inference.
+:::
+
+## 1.2. Simulation Design
 
 The factorial design encompasses 36 unique experimental conditions with 200 replications per condition:
   
@@ -98,7 +145,46 @@ The factorial design encompasses 36 unique experimental conditions with 200 repl
 | | Set B (Asymmetric): $\Phi = \begin{pmatrix} 0.55 & 0.10 \\ 0.10 & 0.25 \end{pmatrix}$ |
 | **Skewness Direction** | `++` (Both positive), `--` (Both negative), `+-` (Mixed) |
 
-## 2. Data Loading and Preparation
+::: {.callout-note}
+**Exclusion of `-+` Direction**
+
+The design includes directions `++`, `--`, and `+-` but excludes `-+`. This is intentional: given the symmetric VAR structure ($\phi_{12} = \phi_{21}$) and symmetric Gaussian copula, the condition `+-` is statistically equivalent to `-+` under variable relabeling. Including both would double computational cost without providing new information.
+:::
+
+## 1.3. True Parameter Values
+
+```{r true_params_table}
+#| label: true_params_table
+#| echo: false
+
+true_params <- tibble(
+  Parameter = c("$\\mu_1, \\mu_2$", 
+                "$\\phi_{11}$ (Set A / Set B)",
+                "$\\phi_{12} = \\phi_{21}$",
+                "$\\phi_{22}$ (Set A / Set B)",
+                "$\\rho$",
+                "$\\sigma_1, \\sigma_2$ (NG model)",
+                "$\\sigma_{\\text{exp},1}, \\sigma_{\\text{exp},2}$ (EG model)"),
+  `True Value` = c("0, 0",
+                   "0.40 / 0.55",
+                   "0.10",
+                   "0.40 / 0.25",
+                   "0.30 or 0.50",
+                   "1.0, 1.0",
+                   "1.0, 1.0"),
+  Notes = c("Innovations are mean-zero by standardization",
+            "Diagonal AR coefficients",
+            "Cross-effects (symmetric)",
+            "Diagonal AR coefficients",
+            "Copula correlation",
+            "Innovations are unit-variance by standardization",
+            "Standardized Exponential scale parameter")
+)
+
+kable(true_params, caption = "True Parameter Values Used in the Data Generating Process.", escape = FALSE)
+```
+
+# 2. Data Loading and Preparation
 
 ```{r load_data}
 #| label: load_data
@@ -148,11 +234,8 @@ prep_data <- function(df) {
       VARset_val  = VARset,
       rho         = factor(rho, labels = sort(unique(df$rho))),
       VARset      = factor(VARset, labels = sort(unique(df$VARset))),
-      Model = case_when(
-        model == "NG" ~ "Normal (NG)",
-        model == "EG" ~ "Exponential (EG)"
-      ),
-      Model = factor(Model, levels = c("Normal (NG)", "Exponential (EG)"))
+      Model = factor(ifelse(model == "NG", "NG", "EG"),
+                     levels = c("NG", "EG"))
     )
 }
 
@@ -164,9 +247,16 @@ rep_df <- prep_data(rep_raw)
 core_params <- c("mu[1]","mu[2]","phi11","phi12","phi21","phi22","rho")
 ```
 
-### 2.1. MCMC classification and overview
+::: {.callout-note}
+**Bias Metric for Intercepts ($\mu$)**
+
+The "Relative Bias" plots display `mean_rel_bias`, defined as $(\hat{\theta} - \theta_{\text{true}}) / |\theta_{\text{true}}|$. However, for the intercept parameters $\mu_1$ and $\mu_2$, the true value is zero, making relative bias undefined. In these cases, we report **absolute bias** instead. This means that for $\mu$ panels in "Relative Bias" plots, the y-axis shows absolute deviation from zero (in original units), not a proportion.
+:::
+
+## 2.1. MCMC Classification and Overview
 
 Posterior sampling quality is evaluated using identical criteria to Study 1:
+
 - **Convergence threshold**: $\hat{R} > 1.01$ indicates inadequate mixing
 - **Geometric pathology**: Presence of post-warmup divergent transitions ($n_{\text{div}} > 0$)
 
@@ -201,6 +291,8 @@ ggplot(mcmc_summary, aes(x = T, y = Count, fill = mcmc_status)) +
   scale_fill_manual(values = c("Clean" = "#4daf4a", "Problematic" = "#ff7f00", "Failed/Error" = "#e41a1c"))
 ```
 
+**Interpretation:** The NG model achieves 100% "Clean" status across all conditions, demonstrating complete computational stability even under misspecification. The EG model shows more "Problematic" runs, particularly at $T = 50$, due to the boundary constraints inherent in the Exponential likelihood. However, as shown in Section 6, these diagnostics do not substantially affect statistical validity.
+
 ```{r divergence_overview, fig.height=5, fig.width=16}
 #| label: divergence_overview
 
@@ -218,21 +310,21 @@ ggplot(div_dist_data, aes(x = T, y = n_div_clean, fill = Model)) +
        y = "Count of Divergences (n_div)", x = "Time Points (T)")
 ```
 
-NG is entirely **Clean**; EG shows 4 divergences in total. 
+**Interpretation:** NG exhibits zero divergent transitions across all conditions. EG shows limited divergences concentrated at $T = 50$, with counts typically below 2. The divergence magnitude is substantially lower than observed for SG in Study 1's `extremeCHI` condition.
 
-## 3. Helper plotting utilities
+# 3. Helper Plotting Utilities
 
-```{r analysis_helpers}
-#| label: analysis_helpers
+```{r helper_plotting}
+#| label: helper_plotting
 
 theme_standard <- theme_bw(base_size = 14)
 dodge_width    <- 0.5
-model_colors   <- c("Normal (NG)" = "#377eb8", "Exponential (EG)" = "#4daf4a")
+model_colors   <- c("NG" = "#377eb8", "EG" = "#4daf4a")
 
 plot_metric <- function(data, metric_col, ylab, title, use_free_y = FALSE, ylims = NULL) {
   data_filtered <- data |> filter(!is.na(.data[[metric_col]]))
   if (nrow(data_filtered) == 0) return(NULL)
-
+  
   p <- ggplot(data_filtered, aes(x = T, y = .data[[metric_col]], color = Model, group = Model)) +
     geom_line(position = position_dodge(dodge_width), linewidth = 1) +
     geom_point(position = position_dodge(dodge_width), size = 2.5) +
@@ -257,60 +349,62 @@ generate_plots <- function() {
   cov_ylims   <- c(0.5, 1.0)
   list(
     bias     = plot_metric(data_subset, "mean_rel_bias", "Mean Relative Bias",
-                           "Relative Bias (Observed, DGP: Exponential)", use_free_y = TRUE),
+                           "Relative Bias (DGP: Exponential)", use_free_y = TRUE),
     coverage = plot_metric(data_subset, "coverage_95", "Empirical Coverage",
-                           "95% Coverage (Observed, DGP: Exponential)", ylims = cov_ylims),
+                           "95% Coverage (DGP: Exponential)", ylims = cov_ylims),
     rmse     = plot_metric(data_subset, "RMSE", "Root Mean Squared Error",
-                           "RMSE (Observed, DGP: Exponential)", use_free_y = TRUE),
+                           "RMSE (DGP: Exponential)", use_free_y = TRUE),
     post_sd  = plot_metric(data_subset, "mean_post_sd", "Mean Posterior SD",
-                           "Mean Posterior SD (Observed, DGP: Exponential)", use_free_y = TRUE),
+                           "Mean Posterior SD (DGP: Exponential)", use_free_y = TRUE),
     sdbias   = plot_metric(data_subset, "sd_bias", "SD-Bias",
-                           "SD-Bias (Observed, DGP: Exponential)", use_free_y = TRUE)
+                           "SD-Bias (DGP: Exponential)", use_free_y = TRUE)
   )
 }
 ```
 
-## 4. Analysis: Exponential DGP (NG vs EG)
+# 4. Analysis: Exponential DGP (NG vs EG)
 
 ```{r exponential_plots, results="hide"}
 #| label: exponential_plots
 plots_exp <- generate_plots()
 ```
 
-### 4.1. Relative bias (observed)
+## 4.1. Relative Bias
 
 ```{r exponential_bias, fig.height=16, fig.width=16}
 #| label: exponential_bias
 print(plots_exp$bias)
 ```
 
-EG is centered near zero across $\Phi,\ \rho,\ \mu$. NG shows **attenuation bias** for $\rho$ across directions, VAR sets, and $T$.
+**Interpretation:** EG (green) shows near-zero bias across all parameters ($\Phi$, $\rho$, $\mu$), confirming correct specification. NG (blue) exhibits severe **attenuation bias** for $\rho$, with relative bias approaching -2.0 in some conditions—meaning estimates are biased toward zero by up to 200% of the true value. This catastrophic $\rho$ bias arises from PIT distortion: when the assumed Normal marginals cannot represent the Exponential tails, the probability integral transform compresses extreme observations toward the center of $[0,1]^2$, attenuating perceived copula dependence. The same mechanism drives the $\rho$ failures observed in Study 1's `extremeCHI` condition.
 
-### 4.2. 95% coverage (observed)
+## 4.2. 95% Coverage
 
 ```{r exponential_coverage, fig.height=16, fig.width=16}
 #| label: exponential_coverage
 print(plots_exp$coverage)
 ```
 
-EG coverage is **near‑nominal** across parameters; NG **under‑covers** for $\rho$ (often $<0.9$), consistent with the $\rho$ bias.
+**Interpretation:** EG maintains near-nominal (95%) coverage across all parameters. NG severely under-covers for $\rho$ (often below 0.90), a direct consequence of the attenuation bias: true values fall outside the posterior intervals because the entire posterior distribution is shifted toward zero.
 
-### 4.3. SD‑Bias (observed)
+## 4.3. SD-Bias
 
 ```{r exponential_sdbias, fig.height=16, fig.width=16}
 #| label: exponential_sdbias
 print(plots_exp$sdbias)
 ```
 
-## 5. Marginal parameters (what the models learn)
+**Interpretation:** EG shows SD-Bias $\approx 0$ across all parameters, indicating well-calibrated posterior uncertainty—the model's reported uncertainty matches the empirical variability of estimates. NG exhibits negative SD-Bias for $\rho$, meaning its posterior intervals are over-confident (too narrow) relative to the actual estimation error. This over-confidence compounds the bias problem: not only are NG's $\rho$ estimates wrong, but the model is inappropriately certain about them.
 
-### 5.1. EG: scale recovery $\sigma_{\text{exp}}$ (truth = 1)
+# 5. Marginal Parameters
+
+## 5.1. EG: Scale Recovery $\sigma_{\text{exp}}$ (truth = 1)
 
 ```{r eg_sigma_exp_recovery, fig.height=6, fig.width=18}
 #| label: eg_sigma_exp_recovery
 
 sigma_exp_data <- cond |>
-  filter(param %in% c("sigma_exp[1]", "sigma_exp[2]"), Model == "Exponential (EG)")
+  filter(param %in% c("sigma_exp[1]", "sigma_exp[2]"), Model == "EG")
 
 if (nrow(sigma_exp_data) > 0) {
   ggplot(sigma_exp_data, aes(x = T, y = mean_bias, color = Model, group = Model)) +
@@ -323,17 +417,19 @@ if (nrow(sigma_exp_data) > 0) {
     labs(title = "EG: Bias for sigma_exp (truth = 1)",
          y = "Mean Bias (Estimate - 1)", x = "Time Points (T)")
 } else {
-  message("No EG marginal scale parameters available.")
+  message("No EG marginal scale parameters available in the results.")
 }
 ```
 
-### 5.2. NG: variance $\sigma$ (truth = 1)
+**Interpretation:** EG accurately recovers $\sigma_{\text{exp}} = 1$ with negligible bias across all conditions, confirming that the model correctly identifies the marginal scale parameter.
 
-```{r ng_sigma_bias, fig.height=12, fig.width=16}
+## 5.2. NG: Scale Parameter $\sigma$ (truth = 1)
+
+```{r ng_sigma_bias, fig.height=8, fig.width=16}
 #| label: ng_sigma_bias
 
 sigma_data <- cond |>
-  filter(param %in% c("sigma[1]", "sigma[2]"), Model == "Normal (NG)")
+  filter(param %in% c("sigma[1]", "sigma[2]"), Model == "NG")
 
 if (nrow(sigma_data) > 0) {
   ggplot(sigma_data, aes(x = T, y = mean_bias, color = Model, group = Model)) +
@@ -350,11 +446,16 @@ if (nrow(sigma_data) > 0) {
 }
 ```
 
-**Observed:** NG’s $\sigma$ bias is **small in absolute value** (≈ |0.01–0.03|); the primary misspecification signal arises in **dependence** ($\rho$), not in marginal scale.
+**Interpretation:** NG's $\sigma$ estimates show small bias (approximately $\pm 0.01$–$0.03$). Importantly, **$\sigma$ bias and $\rho$ attenuation are parallel consequences of marginal misspecification, not a causal chain**. Both arise from the same root cause (Exponential data fitted with Normal assumptions) but through different pathways:
 
-## 6. Impact of MCMC diagnostics (EG only)
+- **$\sigma$ bias**: Minor scale adjustments to improve marginal likelihood
+- **$\rho$ attenuation**: PIT distortion compresses tail observations, reducing perceived dependence
 
-### 6.1. Coverage split: Clean vs Problematic
+The small magnitude of $\sigma$ bias ($\approx 2\%$) compared to $\rho$ bias ($\approx 200\%$) confirms these are distinct phenomena.
+
+# 6. Impact of MCMC Diagnostics (EG Only)
+
+## 6.1. Coverage Split: Clean vs Problematic
 
 ```{r reaggregate_by_status}
 #| label: reaggregate_by_status
@@ -387,10 +488,10 @@ cond_status <- aggregate_by_status(rep_df)
 #| label: coverage_status_split
 
 status_comparison_data <- cond_status |>
-  filter(Model == "Exponential (EG)", param %in% core_params)
+  filter(Model == "EG", param %in% core_params)
 
 if (nrow(status_comparison_data) > 0 &&
-    length(unique(status_comparison_data$mcmc_status)) > 0) {
+    length(unique(status_comparison_data$mcmc_status)) > 1) {
   ggplot(status_comparison_data,
          aes(x = T, y = coverage_95, color = mcmc_status, group = mcmc_status)) +
     geom_line(position = position_dodge(0.3), linewidth = 1) +
@@ -398,21 +499,23 @@ if (nrow(status_comparison_data) > 0 &&
     geom_hline(yintercept = 0.95, linetype = "dashed", color = "darkgrey") +
     facet_grid(param ~ direction + VARset + rho, labeller = label_both) +
     theme_standard +
-    labs(title = "EG coverage: Clean vs Problematic runs",
+    labs(title = "EG Coverage: Clean vs Problematic Runs",
          y = "Empirical Coverage", x = "Time Points (T)", color = "MCMC Status") +
     coord_cartesian(ylim = c(0.8, 1.0))
 } else {
-  message("Not enough EG status diversity (all Clean or all Problematic).")
+  message("Not enough EG status diversity for comparison (all Clean or all Problematic).")
 }
 ```
 
-### 6.2. Absolute bias vs divergences
+**Interpretation:** Clean and Problematic EG runs show very similar coverage, typically near 95%. This mirrors the finding from Study 1: divergent transitions, while indicating sampling difficulties, do not necessarily compromise the validity of posterior inference for the parameters of interest.
+
+## 6.2. Absolute Bias vs Divergences
 
 ```{r bias_vs_divergences, fig.height=12, fig.width=16}
 #| label: bias_vs_divergences
 
 div_bias_data <- rep_df |>
-  filter(Model == "Exponential (EG)", param %in% core_params, mcmc_status != "Failed/Error")
+  filter(Model == "EG", param %in% core_params, mcmc_status != "Failed/Error")
 
 if (nrow(div_bias_data) > 0) {
   ggplot(div_bias_data, aes(x = n_div_clean, y = abs(bias))) +
@@ -420,20 +523,22 @@ if (nrow(div_bias_data) > 0) {
     geom_smooth(method = "gam", color = "red", linewidth = 1.5) +
     facet_grid(param ~ T, scales = "free") +
     theme_standard +
-    labs(title = "Absolute bias vs divergences (EG)",
-         x = "Number of divergent transitions (n_div)", y = "Absolute bias")
+    labs(title = "Absolute Bias vs Divergences (EG Model)",
+         x = "Number of Divergent Transitions (n_div)", y = "Absolute Bias")
 } else {
   message("No EG data available for bias-vs-divergences analysis.")
 }
 ```
 
-## 7. Export tables
+**Interpretation:** There is only a weak relationship between divergence counts and absolute bias. High-bias estimates occur in runs with few divergences, and low-bias estimates occur in runs with many divergences. This reinforces the conclusion that MCMC diagnostics, while important computational indicators, are not reliable predictors of statistical accuracy in this context.
+
+# 7. Export Tables
 
 ```{r export_tables}
 #| label: export_tables
 
 export_cond <- cond |>
-  filter(Model %in% c("Normal (NG)", "Exponential (EG)")) |>
+  filter(Model %in% c("NG", "EG")) |>
   select(condition_id, Model, param, dgp_level = skew_level, direction, T,
          rho = rho_val, VARset = VARset_val,
          N_valid, N_truth_avail,
@@ -444,7 +549,7 @@ export_cond <- cond |>
 write_csv(export_cond, file.path(EXPORT_DIR, "analysis_summary_aggregated_S2_EG_vs_NG.csv"))
 
 export_status <- cond_status |>
-  filter(Model %in% c("Normal (NG)", "Exponential (EG)")) |>
+  filter(Model %in% c("NG", "EG")) |>
   select(condition_id, Model, param, mcmc_status,
          dgp_level = skew_level, direction, T,
          rho = rho_val, VARset = VARset_val,
@@ -462,3 +567,8 @@ write_csv(mcmc_health_export, file.path(EXPORT_DIR, "analysis_mcmc_health_counts
 message("Tables exported to: ", EXPORT_DIR)
 ```
 
+# 8. Summary
+
+Under Exponential innovations with Gaussian-copula dependence, the correctly specified EG model yields near-zero bias for $\Phi$, $\rho$, and $\mu$, near-nominal coverage, and well-calibrated uncertainty. The NG baseline is computationally clean but suffers catastrophic $\rho$ attenuation (relative bias up to -2.0) and substantial under-coverage for $\rho$, with only minor bias in marginal scale $\sigma$. EG shows more divergences at small $T$ than NG, yet coverage remains similar between "Clean" and "Problematic" runs, and bias is only weakly related to divergence counts under the adopted tuning.
+
+The mechanism of NG failure is identical to Study 1's `extremeCHI` condition: marginal misspecification causes PIT distortion that compresses tail observations toward the center of the copula space, attenuating perceived dependence regardless of how well the marginal scale is estimated.
