@@ -116,10 +116,10 @@ if (RUN_FITTING) {
     stan_dir        = STAN_DIR,
     results_dir     = RESULT_DIR,
     chains          = 4,
-    iter            = 3000,
-    warmup          = 1500,
-    adapt_delta     = 0.90, # per your request
-    max_treedepth   = 10, # per your request
+    iter            = 4000,
+    warmup          = 2000,
+    adapt_delta     = 0.95, # per your request
+    max_treedepth   = 12, # per your request
     cores_outer     = NUM_CORES_OUT,
     start_condition = START_COND,
     start_rep       = START_REP
