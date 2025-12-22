@@ -16,7 +16,6 @@ execute:
 ---
 
 ```{r setup}
-#| label: setup
 suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
@@ -51,7 +50,7 @@ design <- readRDS(files$design)
 
 summary_tbl <- tibble::tibble(
   Factor = c("Time Series Length (T)",
-             "Copula Parameter (Clayton θ)",
+             "Copula Parameter (Clayton theta)",
              "VAR Parameters (Set A)",
              "",
              "Margins"),
@@ -68,7 +67,6 @@ knitr::kable(summary_tbl, caption = "Study 3 design factors.", escape = FALSE)
 # 2. Data Loading & Preparation
 
 ```{r load_data}
-#| label: load_data
 
 # condition-level summary (aggregated metrics) and replication-level summary
 cond_raw <- read_csv(files$cond, show_col_types = FALSE)
@@ -127,7 +125,6 @@ core_params <- c("mu[1]","mu[2]","phi11","phi12","phi21","phi22")
 # 3. MCMC Classification & Overview
 
 ```{r classify_mcmc}
-#| label: classify_mcmc
 
 RHAT_THRESHOLD <- 1.01
 
@@ -151,13 +148,12 @@ ggplot(mcmc_summary, aes(x = T, y = Count, fill = mcmc_status)) +
   geom_bar(stat = "identity", position = "stack") +
   facet_grid(Model ~ theta, labeller = label_both) +
   labs(x = "Time Series Length (T)", y = "Number of Replications", fill = "MCMC Status",
-       title = "MCMC status counts by model, θ, and T") +
+       title = "MCMC status counts by model, theta, and T") +
   theme_bw(base_size = 13) +
   scale_fill_manual(values = c("Clean" = "#4daf4a", "Problematic" = "#ff7f00", "Failed/Error" = "#e41a1c"))
 ```
 
 ```{r divergence_overview, fig.height=9, fig.width=16}
-#| label: divergence_overview
 
 # Use a parameter present in both models to get one row per replication
 div_dist_data <- rep_df |>
@@ -177,7 +173,6 @@ ggplot(div_dist_data, aes(x = T, y = n_div_clean, fill = Model)) +
 # 4. Helper Utilities
 
 ```{r helpers}
-#| label: helpers
 
 theme_standard <- theme_bw(base_size = 13)
 dodge_width    <- 0.5
@@ -185,7 +180,15 @@ model_colors   <- c("NG (Gaussian copula)" = "#377eb8",
                     "NC (Clayton copula)"  = "#4daf4a")
 
 plot_metric <- function(data, metric_col, ylab, title, use_free_y = FALSE, ylims = NULL) {
-  data_filtered <- data |> filter(!is.na(.data[[metric_col]]))
+  data_filtered <- data |>
+    filter(
+      !is.na(.data[[metric_col]]),
+      !is.na(T),
+      !is.na(param),
+      !is.na(VARset),
+      !is.na(theta)
+    ) |>
+    droplevels()
   if (nrow(data_filtered) == 0) return(NULL)
 
   p <- ggplot(data_filtered, aes(x = T, y = .data[[metric_col]], color = Model, group = Model)) +
@@ -224,34 +227,29 @@ generate_core_plots <- function() {
 }
 ```
 
-# 5. Core Parameters (μ, Φ)
+# 5. Core Parameters (mu, Phi)
 
 ```{r core_plots, results="hide"}
-#| label: core_plots
 plots_core <- generate_core_plots()
 ```
 
 ```{r core_bias, fig.height=16, fig.width=16}
-#| label: core_bias
 print(plots_core$bias)
 ```
 
 ```{r core_coverage, fig.height=16, fig.width=16}
-#| label: core_coverage
 print(plots_core$coverage)
 ```
 
 ```{r core_sdbias, fig.height=16, fig.width=16}
-#| label: core_sdbias
 print(plots_core$sdbias)
 ```
 
 # 6. Copula Parameters
 
-## 6.1 NC (Clayton copula): θ recovery (truth = design θ)
+## 6.1 NC (Clayton copula): theta recovery (truth = design theta)
 
 ```{r theta_recovery_bias, fig.height=6, fig.width=18}
-#| label: theta_recovery_bias
 theta_data <- cond |>
   filter(Model == "NC (Clayton copula)", param == "theta")
 
@@ -263,12 +261,11 @@ if (nrow(theta_data) > 0) {
     facet_grid(. ~ VARset + theta, labeller = label_both) +
     theme_standard +
     scale_color_manual(values = model_colors) +
-    labs(title = "NC: Bias for θ (truth = design θ)", y = "Mean Bias", x = "T")
+    labs(title = "NC: Bias for theta (truth = design theta)", y = "Mean Bias", x = "T")
 }
 ```
 
 ```{r theta_recovery_cov, fig.height=6, fig.width=18}
-#| label: theta_recovery_cov
 if (nrow(theta_data) > 0) {
   ggplot(theta_data, aes(x = T, y = coverage_95, color = Model, group = Model)) +
     geom_line(position = position_dodge(0.3), linewidth = 1) +
@@ -277,15 +274,14 @@ if (nrow(theta_data) > 0) {
     facet_grid(. ~ VARset + theta, labeller = label_both) +
     theme_standard +
     scale_color_manual(values = model_colors) +
-    labs(title = "NC: 95% coverage for θ", y = "Coverage", x = "T") +
+    labs(title = "NC: 95% coverage for theta", y = "Coverage", x = "T") +
     coord_cartesian(ylim = c(0.6, 1.0))
 }
 ```
 
-## 6.2 NG (Gaussian copula): ρ posterior means (no ground truth under Clayton DGP)
+## 6.2 NG (Gaussian copula): rho posterior means (no ground truth under Clayton DGP)
 
 ```{r rho_postmean_box, fig.height=8, fig.width=18}
-#| label: rho_postmean_box
 rho_rep <- rep_df |>
   filter(Model == "NG (Gaussian copula)", param == "rho")
 
@@ -295,34 +291,52 @@ if (nrow(rho_rep) > 0) {
     geom_jitter(width = 0.15, alpha = 0.25, size = 1) +
     facet_grid(. ~ theta, labeller = label_both) +
     theme_standard +
-    labs(title = "NG: Posterior mean of ρ by T and θ (no truth for ρ)", y = "Posterior mean(ρ)", x = "T")
+    labs(title = "NG: Posterior mean of rho by T and theta (no truth for rho)", y = "Posterior mean(rho)", x = "T")
 }
 ```
 
-# 7. Marginal Variances (σ)
+# 7. Marginal Variances (sigma)
 
 ```{r sigma_bias, fig.height=12, fig.width=16}
-#| label: sigma_bias
 
 sigma_cond <- cond |>
   filter(param %in% c("sigma[1]", "sigma[2]"))
 
 if (nrow(sigma_cond) > 0) {
-  ggplot(sigma_cond, aes(x = T, y = mean_bias, color = Model, group = Model)) +
-    geom_line(position = position_dodge(0.3), linewidth = 1) +
-    geom_point(position = position_dodge(0.3), size = 2.5) +
-    geom_hline(yintercept = 0, linetype = "dashed", color = "darkgrey") +
-    facet_grid(param ~ VARset + theta, labeller = label_both) +
-    theme_standard +
-    scale_color_manual(values = model_colors) +
-    labs(title = "Bias for σ (truth = 1)", y = "Mean Bias (Estimate − 1)", x = "T")
+
+  # Guard against edge cases where facetting variables are missing/NA
+  sigma_plot_df <- sigma_cond |>
+    filter(!is.na(T), !is.na(VARset), !is.na(theta)) |>
+    droplevels()
+
+  if (nrow(sigma_plot_df) > 0) {
+
+    base_p <- ggplot(sigma_plot_df, aes(x = T, y = mean_bias, color = Model, group = Model)) +
+      geom_line(position = position_dodge(0.3), linewidth = 1) +
+      geom_point(position = position_dodge(0.3), size = 2.5) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "darkgrey") +
+      theme_standard +
+      scale_color_manual(values = model_colors) +
+      labs(title = "Bias for sigma (truth = 1)", y = "Mean Bias (Estimate − 1)", x = "T")
+
+    p_sigma <- tryCatch(
+      base_p + facet_grid(param ~ VARset + theta, labeller = label_both),
+      error = function(e) {
+        tryCatch(
+          base_p + facet_wrap(~ param, ncol = 1),
+          error = function(e2) base_p
+        )
+      }
+    )
+
+    p_sigma
+  }
 }
 ```
 
 # 8. MCMC Diagnostics: Status Split
 
 ```{r aggregate_by_status}
-#| label: aggregate_by_status
 
 aggregate_by_status <- function(df) {
   df |>
@@ -347,7 +361,6 @@ cond_status <- aggregate_by_status(rep_df)
 ```
 
 ```{r coverage_status_split_nc, fig.height=10, fig.width=16}
-#| label: coverage_status_split_nc
 status_nc <- cond_status |>
   filter(Model == "NC (Clayton copula)", param %in% c(core_params, "theta"))
 
@@ -366,7 +379,6 @@ if (nrow(status_nc) > 0) {
 # 9. Export Tables
 
 ```{r export_tables}
-#| label: export_tables
 
 # Aggregated condition-level summary
 export_cond <- cond |>
