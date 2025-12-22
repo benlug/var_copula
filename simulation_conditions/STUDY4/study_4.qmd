@@ -1,12 +1,6 @@
 ---
 title: "Study 4: Multilevel VAR(1) with Exponential Margins — Exponential vs Gaussian Marginal Models (minimal pooling)"
 format:
-  html:
-    toc: true
-    toc_depth: 3
-    code-fold: true
-    theme: lumen
-    self-contained: true
   pdf:
     toc: true
     toc_depth: 3
