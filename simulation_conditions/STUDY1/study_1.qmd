@@ -1,12 +1,6 @@
 ---
 title: "Study 1: Comparative Performance of Gaussian and Skew-Normal Copula VAR Models Under Marginal Misspecification"
 format:
-  html:
-    toc: true
-    toc_depth: 3
-    code-fold: true
-    theme: lumen
-    self-contained: true
   pdf:
     toc: true
     toc_depth: 3
