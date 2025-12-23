@@ -1,6 +1,12 @@
 ---
 title: "Study 4: Multilevel VAR(1) with Exponential Margins — Exponential vs Gaussian Marginal Models (minimal pooling)"
 format:
+  html:
+    toc: true
+    toc_depth: 3
+    code-fold: true
+    theme: lumen
+    self-contained: true
   pdf:
     toc: true
     toc_depth: 3
@@ -20,10 +26,17 @@ suppressPackageStartupMessages({
   library(scales)
 })
 
-# Project-relative paths (kept consistent with the Study 1–3 reports)
-BASE_DIR   <- file.path("simulation_conditions", "STUDY4")
-DATA_DIR   <- file.path(BASE_DIR, "data")
-RES_DIR    <- file.path(BASE_DIR, "results")
+# Paths (consistent with Studies 1–3)
+# - If you render from within `simulation_conditions/STUDY4/`, these resolve to `./data` and `./results`.
+# - If you render from the project root, these fall back to `simulation_conditions/STUDY4/`.
+DATA_DIR <- file.path("data")
+RES_DIR  <- file.path("results")
+
+if (!dir.exists(RES_DIR) && dir.exists(file.path("simulation_conditions", "STUDY4", "results"))) {
+  DATA_DIR <- file.path("simulation_conditions", "STUDY4", "data")
+  RES_DIR  <- file.path("simulation_conditions", "STUDY4", "results")
+}
+
 EXPORT_DIR <- file.path(RES_DIR, "exported_tables")
 dir.create(EXPORT_DIR, showWarnings = FALSE, recursive = TRUE)
 
@@ -188,7 +201,7 @@ All conditions are standardized so that the marginal innovation variance is 1. C
 
 ```{r design_overview, echo=FALSE}
 if (is.null(design)) {
-  cat("(Design file not found: `simulation_conditions/STUDY4/data/sim_conditions_ml.rds`. Skipping design tables.)")
+  cat(sprintf("(Design file not found: `%s`. Skipping design tables.)", files$design))
 } else {
   design_tbl <- design |>
     mutate(
@@ -239,11 +252,11 @@ Two multilevel models are fit to each simulated dataset:
 Both models share the same hierarchical intercept structure $(\bar\mu,\tau_\mu)$ and the same global VAR parameters $(\Phi,\rho)$.
 
 # 2. Data loading and preparation
+This report reads the summary artifacts produced by `run_pipeline_ml.R` and `analysis_multilevel.R` (paths shown relative to the Study 4 directory):
 
-This report reads the condition-level and replication-level summaries produced by `analysis_multilevel.R`:
-
-- `simulation_conditions/STUDY4/results/summary_replications_ml.csv`
-- `simulation_conditions/STUDY4/results/summary_conditions_ml.csv`
+- `data/sim_conditions_ml.rds` (optional; simulation design table used for reporting).
+- `results/summary_replications_ml.csv` (required; per-replication parameter summaries and diagnostics).
+- `results/summary_conditions_ml.csv` (required; condition-level summaries: mean bias, coverage, etc.).
 
 The replication-level file contains posterior summaries and diagnostics for each fitted dataset; the condition-level file aggregates those summaries across replications within each condition.
 

@@ -200,20 +200,5 @@ if (RUN_ANALYSIS) {
   )
 }
 
-## =======================================================================
-## 6 · Visualization -----------------------------------------------------
-## =======================================================================
-if (RUN_VISUALIZATION) {
-  message("\n>>> Running Visualization...")
-  tryCatch(
-    {
-      source("visualize_results.R", local = TRUE)
-    },
-    error = function(e) {
-      message("!!! Visualization failed: ", e$message)
-    }
-  )
-}
-
 
 message("\n>>> Pipeline COMPLETE.")
