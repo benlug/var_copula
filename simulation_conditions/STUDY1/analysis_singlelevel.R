@@ -1,5 +1,6 @@
 ###########################################################################
-# analysis_singlelevel.R  - Single-CPU analysis of fit summaries
+# analysis_singlelevel.R  – Analysis of compact fit summaries
+#   Matches TVP/Study 2 format: fit_summary$summary is a matrix, not data.frame
 ###########################################################################
 
 suppressPackageStartupMessages({
@@ -11,20 +12,18 @@ suppressPackageStartupMessages({
 
 # ── Folders ---------------------------------------------------------------
 if (!requireNamespace("this.path", quietly = TRUE)) {
-  message("Package 'this.path' not found. Assuming current working directory.")
   BASE_DIR <- getwd()
 } else {
   tryCatch({
     BASE_DIR <- this.path::this.dir()
   }, error = function(e) {
-    message("this.path::this.dir() failed. Assuming current working directory.")
     BASE_DIR <<- getwd()
   })
 }
 
 DATA_DIR <- file.path(BASE_DIR, "data")
 FITS_DIR <- file.path(BASE_DIR, "fits")
-RES_DIR <- file.path(BASE_DIR, "results")
+RES_DIR  <- file.path(BASE_DIR, "results")
 dir.create(RES_DIR, FALSE, TRUE)
 
 # ── Helpers ---------------------------------------------------------------
@@ -77,8 +76,8 @@ for (i in seq_along(fits)) {
     next
   }
   
-  # Extract status from the new format
-  stat <- fit_data$meta$status %||% "unknown"
+  # Extract status
+  stat <- fit_data$status %||% "unknown"
   
   # Load simulation data for ground truth
   sim <- load_sim(cid, rid)
@@ -139,22 +138,27 @@ for (i in seq_along(fits)) {
             if (model == "NG") SIGMA_NG,
             if (model == "SG") EXTRA_SG)
 
-  # Extract summary from fit data
-  sm <- fit_data$summary
-  diag <- fit_data$diagnostics
+  # Extract summary - it's a matrix in TVP format, not a data frame
+  sm_raw <- fit_data$summary
+  n_div <- fit_data$n_div %||% NA_integer_
+  max_rhat <- fit_data$max_rhat %||% NA_real_
   
-  if (is.null(sm) || stat != "ok") {
+  if (is.null(sm_raw) || stat != "ok") {
     rows[[i]] <- tibble(
       model, condition_id = cid, rep_id = rid,
       param = NA_character_, status = stat,
-      n_div = diag$n_div %||% NA_integer_,
-      max_rhat = diag$max_rhat %||% NA_real_
+      n_div = n_div, max_rhat = max_rhat
     )
     next
   }
 
+  # Convert matrix to data frame
+  sm <- as.data.frame(sm_raw)
+  sm$param <- rownames(sm_raw)
+  rownames(sm) <- NULL
+  
   # Filter to wanted parameters
-  sm <- sm |> filter(param %in% want)
+  sm <- sm[sm$param %in% want, , drop = FALSE]
   
   if (nrow(sm) == 0) {
     rows[[i]] <- tibble(model, condition_id = cid, rep_id = rid,
@@ -162,24 +166,31 @@ for (i in seq_along(fits)) {
     next
   }
 
-  rows[[i]] <- sm |>
-    mutate(
-      truth = truth[param],
-      bias = ifelse(is.na(truth), NA_real_, mean - truth),
-      rel_bias = ifelse(is.na(truth), NA_real_,
-                        ifelse(abs(truth) < .Machine$double.eps,
-                               bias, bias / abs(truth))),
-      cover95 = ifelse(is.na(truth), NA, (`2.5%` <= truth & `97.5%` >= truth)),
-      model = model, condition_id = cid, rep_id = rid,
-      n_div = diag$n_div %||% NA_integer_,
-      max_rhat = diag$max_rhat %||% NA_real_,
-      status = stat
-    ) |>
-    select(model, condition_id, rep_id, param,
-           post_mean = mean, post_sd = sd,
-           l95 = `2.5%`, u95 = `97.5%`,
-           truth, bias, rel_bias, cover95,
-           n_div, max_rhat, status)
+  # Build result
+  result <- data.frame(
+    model = model,
+    condition_id = cid,
+    rep_id = rid,
+    param = sm$param,
+    post_mean = sm$mean,
+    post_sd = sm$sd,
+    l95 = sm$`2.5%`,
+    u95 = sm$`97.5%`,
+    stringsAsFactors = FALSE
+  )
+  
+  result$truth <- truth[result$param]
+  result$bias <- ifelse(is.na(result$truth), NA_real_, result$post_mean - result$truth)
+  result$rel_bias <- ifelse(is.na(result$truth), NA_real_,
+                            ifelse(abs(result$truth) < .Machine$double.eps,
+                                   result$bias, result$bias / abs(result$truth)))
+  result$cover95 <- ifelse(is.na(result$truth), NA,
+                           result$l95 <= result$truth & result$u95 >= result$truth)
+  result$n_div <- n_div
+  result$max_rhat <- max_rhat
+  result$status <- stat
+  
+  rows[[i]] <- result
 
   if (i %% 500 == 0) message(sprintf("... processed %d/%d", i, length(fits)))
 }

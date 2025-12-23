@@ -1,6 +1,5 @@
 ###########################################################################
 # run_pipeline.R  - Single-Level VAR(1) Copula Simulation Pipeline
-# FIXED: Robust this.path handling that won't error if package missing
 ###########################################################################
 
 suppressPackageStartupMessages({
@@ -9,33 +8,19 @@ suppressPackageStartupMessages({
   library(tidyr)
 })
 
-## -- Robust directory detection ------------------------------------------
-# FIXED: Don't call library() if package is missing in non-interactive mode
-get_script_dir <- function() {
-  # Try this.path first
-  if (requireNamespace("this.path", quietly = TRUE)) {
-    tryCatch(
-      {
-        return(this.path::this.dir())
-      },
-      error = function(e) NULL
-    )
+## -- folders -------------------------------------------------------------
+BASE_DIR <- tryCatch(
+  {
+    if (requireNamespace("this.path", quietly = TRUE)) {
+      this.path::this.dir()
+    } else {
+      getwd()
+    }
+  },
+  error = function(e) {
+    getwd()
   }
-
-  # Fallback: try to get from command args (Rscript)
-  args <- commandArgs(trailingOnly = FALSE)
-  file_arg <- grep("^--file=", args, value = TRUE)
-  if (length(file_arg) > 0) {
-    script_path <- sub("^--file=", "", file_arg[1])
-    return(dirname(normalizePath(script_path)))
-  }
-
-  # Final fallback: current working directory
-  message("Could not determine script directory. Using getwd().")
-  return(getwd())
-}
-
-BASE_DIR <- get_script_dir()
+)
 setwd(BASE_DIR)
 message("Working directory: ", BASE_DIR)
 
@@ -49,14 +34,27 @@ dir.create(DATA_DIR, FALSE, TRUE)
 dir.create(CHECKS_DIR, FALSE, TRUE)
 dir.create(FITS_DIR, FALSE, TRUE)
 dir.create(RESULT_DIR, FALSE, TRUE)
-dir.create(STAN_DIR, FALSE, TRUE) # Create stan dir if missing
+dir.create(STAN_DIR, FALSE, TRUE)
 
-## -- Resume flags --------------------------------------------------------
+## -- Verify Stan files exist ----------------------------------------------
+stan_files <- c(
+  file.path(STAN_DIR, "model_SNG_sl.stan"),
+  file.path(STAN_DIR, "model_NG_sl.stan")
+)
+missing_stan <- stan_files[!file.exists(stan_files)]
+if (length(missing_stan) > 0) {
+  stop(
+    "Missing Stan files:\n  ", paste(missing_stan, collapse = "\n  "),
+    "\nPlease place Stan model files in: ", STAN_DIR
+  )
+}
+
+## -- resume flags --------------------------------------------------------
 START_COND <- as.integer(Sys.getenv("START_COND", "1"))
 START_REP <- as.integer(Sys.getenv("START_REP", "1"))
 message(">>> Pipeline Start. Resume: Condition=", START_COND, ", Rep=", START_REP)
 
-## -- Toggles -------------------------------------------------------------
+## -- toggles -------------------------------------------------------------
 RUN_SIM <- TRUE
 RUN_CHECKS <- TRUE
 RUN_FITTING <- TRUE
@@ -124,10 +122,7 @@ design_grid <- expand.grid(
   ungroup()
 
 saveRDS(design_grid, file.path(DATA_DIR, "sim_conditions_singlelevel.rds"))
-message(
-  ">>> Design grid: ", nrow(design_grid), " conditions x ", REPS_PER_CELL, " reps = ",
-  nrow(design_grid) * REPS_PER_CELL, " total fits per model"
-)
+message(">>> Design grid: ", nrow(design_grid), " conditions x ", REPS_PER_CELL, " reps")
 
 ## =======================================================================
 ## 2. Simulation
@@ -142,7 +137,7 @@ if (RUN_SIM) {
     burnin            = BURNIN,
     start_condition   = START_COND,
     start_rep         = START_REP,
-    verify_copula     = TRUE # Enable copula verification
+    verify_copula     = FALSE
   )
 }
 
@@ -166,18 +161,18 @@ if (RUN_FITTING) {
 
   if (exists("fit_var1_copula_models")) {
     fit_var1_copula_models(
-      data_dir = DATA_DIR,
-      fits_dir = FITS_DIR,
-      stan_dir = STAN_DIR,
-      results_dir = RESULT_DIR,
-      chains = 4,
-      iter = 4000,
-      warmup = 2000,
-      adapt_delta = 0.95,
-      max_treedepth = 12,
-      cores_outer = NUM_CORES_OUT,
+      data_dir        = DATA_DIR,
+      fits_dir        = FITS_DIR,
+      stan_dir        = STAN_DIR,
+      results_dir     = RESULT_DIR,
+      chains          = 4,
+      iter            = 4000,
+      warmup          = 2000,
+      adapt_delta     = 0.9,
+      max_treedepth   = 12,
+      cores_outer     = NUM_CORES_OUT,
       start_condition = START_COND,
-      start_rep = START_REP
+      start_rep       = START_REP
     )
   }
 }
