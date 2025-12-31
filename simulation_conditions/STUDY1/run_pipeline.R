@@ -168,8 +168,8 @@ if (RUN_FITTING) {
       chains          = 4,
       iter            = 4000,
       warmup          = 2000,
-      adapt_delta     = 0.9,
-      max_treedepth   = 12,
+      adapt_delta     = 0.95,
+      max_treedepth   = 15,
       cores_outer     = NUM_CORES_OUT,
       start_condition = START_COND,
       start_rep       = START_REP

@@ -88,12 +88,25 @@ generate_residuals <- function(n, m1, m2, copula_rho, eps = 1e-9) {
 ## 3 · single replication (No changes needed)
 ## ========================================================================
 simulate_one_replication <- function(cond_row, rep_i,
-                                     output_dir, burnin = 30) {
+                                     output_dir, burnin = 30,
+                                     seed_sim = NULL) {
+  # Deterministic per-dataset seeding (critical for reproducibility under resume/skip)
+  if (!is.null(seed_sim)) {
+    set.seed(as.integer(seed_sim))
+  }
   # mu_vec is 0 as innovations are standardized.
   mu_vec <- c(0, 0)
   phi_mat <- cond_row$phi_matrix[[1]]
   T_time <- cond_row$T
   T_sim <- T_time + burnin
+
+  # Effective copula rho on the PIT/latent-normal scale after mirroring.
+  # Mirroring exactly one margin flips the sign of the Gaussian copula correlation.
+  mirror1 <- isTRUE(cond_row$margin_info[[1]]$margin1$mirror)
+  mirror2 <- isTRUE(cond_row$margin_info[[1]]$margin2$mirror)
+  s1 <- if (mirror1) -1 else 1
+  s2 <- if (mirror2) -1 else 1
+  rho_eff <- s1 * s2 * cond_row$rho
 
   eps_mat <- generate_residuals(
     n          = T_sim,
@@ -114,6 +127,7 @@ simulate_one_replication <- function(cond_row, rep_i,
   out <- list(
     condition_id = cond_row$condition_id,
     rep_i = rep_i,
+    seed_sim = seed_sim,
     N = 1,
     T = T_time,
     data = data.frame(
@@ -124,10 +138,14 @@ simulate_one_replication <- function(cond_row, rep_i,
     ),
     phi_matrix = phi_mat,
     rho = cond_row$rho,
+    rho_eff = rho_eff,
     true_params = list(
       mu         = mu_vec,
       phi        = phi_mat,
-      copula_rho = cond_row$rho,
+      # Backward-compatible names (some downstream scripts may still expect `copula_rho`)
+      copula_rho       = cond_row$rho,
+      copula_rho_input = cond_row$rho,
+      copula_rho_eff   = rho_eff,
       margin1    = cond_row$margin_info[[1]]$margin1,
       margin2    = cond_row$margin_info[[1]]$margin2
     )
@@ -153,7 +171,8 @@ simulate_all_conditions_var1 <- function(sim_conditions_df,
                                          burnin = 30,
                                          start_condition = 1,
                                          start_rep = 1,
-                                         overwrite = FALSE) {
+                                         overwrite = FALSE,
+                                         seed_base = 2026L) {
   dir.create(output_dir, FALSE, TRUE)
   message("=== Simulating single‑level data ===")
 
@@ -196,7 +215,11 @@ simulate_all_conditions_var1 <- function(sim_conditions_df,
         next
       }
 
-      simulate_one_replication(cond, r, output_dir, burnin)
+      # Deterministic seed per (condition, replication) ensures reproducibility under resume/skip
+      # Use a large multiplier to avoid collisions if reps/conditions are expanded later.
+      seed_sim <- as.integer(seed_base + as.integer(cond$condition_id) * 100000L + as.integer(r))
+
+      simulate_one_replication(cond, r, output_dir, burnin, seed_sim = seed_sim)
       utils::setTxtProgressBar(pb, r)
     }
     close(pb)

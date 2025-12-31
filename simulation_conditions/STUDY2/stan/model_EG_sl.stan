@@ -54,9 +54,11 @@ model {
   phi22 ~ normal(0, 0.5);
   rho   ~ normal(0, 0.5);
   
-  // Prior on eta: regularizes toward moderate slack values
-  // eta ~ normal(0, 1) implies exp(eta) has median 1, placing sigma_exp near b + 1
-  eta ~ normal(0, 1);
+  // IMPORTANT (Study 2 fix): Do NOT place an additional independent prior on `eta`.
+  // We already induce a prior on `sigma_exp` below via change-of-variables
+  // (sigma_exp = b + exp(eta), Jacobian term = eta). An extra prior on eta would
+  // double-regularize the scale and can strongly conflict with the intended prior
+  // on sigma_exp, worsening geometry (divergences) and bias.
 
   // Compute residuals
   predictions = rep_matrix(mu, T-1) + y[1:T-1, ] * Phi_T;

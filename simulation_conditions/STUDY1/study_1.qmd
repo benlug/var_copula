@@ -11,6 +11,7 @@ execute:
 
 ```{r setup}
 #| label: setup
+#| echo: false
 # load necessary libraries
 suppressPackageStartupMessages({
   library(dplyr)
@@ -23,6 +24,9 @@ suppressPackageStartupMessages({
   library(ggh4x) 
   library(sn) 
 })
+
+# Use cairo-based PDF device when available to avoid Unicode glyph issues in PDF figures
+knitr::opts_chunk$set(dev = if (capabilities("cairo")) "cairo_pdf" else "pdf")
 
 # define paths
 # BASE_DIR <- getwd() # needed for interactive running
@@ -46,20 +50,18 @@ if (!all(file.exists(unlist(files)))) {
 
 ## 0.1 Computational Stability versus Statistical Inference
 
-The Normal–Gaussian (NG) model is computationally stable across all simulation conditions (no post-warmup divergent transitions; max $\widehat{R} \le 1.01$ in all replications). The Skew–Gaussian (SG) model becomes progressively harder to sample as marginal skewness increases: the proportion of replications classified as *Problematic* (max $\widehat{R} > 1.01$ and/or at least one divergent transition) rises sharply and is essentially universal under `extremeCHI`.
-
-Within this design, these coarse diagnostics are weak predictors of frequentist operating characteristics for the VAR dynamics. In particular, SG coverage for $\Phi$ is similar in *Clean* and *Problematic* subsets. This empirical robustness does not extend to the copula correlation $\rho$, which is substantially attenuated under marginal misspecification for both models.
+The Normal–Gaussian (NG) model is computationally stable across all simulation conditions (no post-warmup divergent transitions; max $\widehat{R} \le 1.01$ in all replications). The Skew–Gaussian (SG) model becomes progressively harder to sample as marginal skewness increases: the proportion of replications classified as *Problematic* (max $\widehat{R} > 1.01$ and/or at least one divergent transition) rises under `extremeCHI`.
 
 ## 0.2 Model Performance Across Skewness Conditions
 
-**Moderate skewness** (`moderateSN`, $\alpha = \pm 4$): NG and SG exhibit broadly comparable performance. For $T \ge 100$, bias is near zero and coverage is close to 0.95 for all core parameters. At $T = 50$, both models show mild finite-sample attenuation in some $\Phi$ and $\rho$ components, but the magnitudes are small and do not materially affect coverage. Under this level of skewness, SG’s additional marginal flexibility yields limited inferential benefit.
+Moderate skewness (`moderateSN`, $\alpha = \pm 4$): NG and SG exhibit comparable performance. For $T \ge 100$, bias is near zero and coverage is close to 0.95 for all core parameters. At $T = 50$, both models show mild finite sample attenuation in some $\Phi$ and $\rho$ parameters (due to priors, estimation uncertainty or errors in variables effect?), but the magnitudes are small and do not affect coverage. Under this level of skewness, SG’s additional marginal flexibility yields no inferential benefit.
 
-**Strong skewness** (`strongSN`, $\alpha = \pm 9$): Differences between NG and SG emerge for the VAR dynamics. SG typically reduces relative bias in $\Phi$ by approximately 0.05–0.15 (occasionally larger at $T = 50$), while coverage gains remain modest. Both models exhibit appreciable downward bias in $\rho$. Because the DGP uses a Gaussian copula, this pattern is best interpreted as PIT distortion induced by marginal misspecification (and finite-sample effects), rather than as an intrinsic failure of Gaussian copulas.
+Strong skewness (`strongSN`, $\alpha = \pm 9$): Differences between NG and SG emerge for the VAR dynamics. SG typically reduces relative bias in Φ by approximately 0.05–0.15, and converges faster to the true values as $T$ increases. Both models exhibit appreciable downward bias in $\rho$. For the NG model, this arises from marginal misspecification (assuming normal when the truth is skew-normal). For the SG model, despite being correctly specified in terms of the distributional family, the shape parameter $\alpha$ is difficult to estimate at small $T$ (see Section 7.2): when $\hat{\alpha}$ is biased toward zero, the fitted CDF still deviates from the truth, producing PIT distortion and attenuated $\rho$ estimates. As $T$ increases and $\alpha$ becomes better identified, this distortion diminishes. 
 
-**Extreme misspecification** (`extremeCHI`, standardized $\chi^2_1$ innovations): Performance deteriorates markedly, with parameter-specific failure modes:
-  - **VAR dynamics ($\Phi$):** SG remains comparatively robust—coverage is typically near nominal for $T \ge 100$—whereas NG shows substantial bias and undercoverage.
-  - **Copula correlation ($\rho$):** both models exhibit severe attenuation; under mixed-sign conditions posterior means can cross zero, producing relative bias below $-1$.
-  - **Intercepts ($\mu$):** SG shows systematic bias in $\mu$ (absolute bias up to $\approx 0.2$ in some settings), while NG’s $\mu$ remains close to 0. This appears to reflect an interaction between the centered skew-normal parameterization and the inability of the skew-normal family to approximate the $\chi^2_1$ tail behavior.
+Extreme misspecification (`extremeCHI`, standardized $\chi^2_1$ innovations): Performance deteriorates markedly, with parameter-specific failure modes:
+  - VAR dynamics ($\Phi$): SG remains comparatively robust—coverage is typically near nominal for $T \ge 100$—whereas NG shows substantial bias and undercoverage.
+  - Copula correlation ($\rho$): both models exhibit severe attenuation; under mixed-sign conditions posterior means can cross zero, producing relative bias below $-1$.
+  - Intercepts ($\mu$): SG shows systematic bias in $\mu$ (absolute bias up to $\approx 0.2$ in some settings), while NG’s $\mu$ remains close to 0. This appears to reflect an interaction between the centered skew-normal parameterization and the inability of the skew-normal family to approximate the $\chi^2_1$ tail behavior.
 
 ## 0.3 Insights
 
@@ -290,8 +292,8 @@ draws <- list(
   "SN  alpha = -4"              = sn::rsn(20000, xi = sn_params(-4)$xi, omega = sn_params(-4)$omega, alpha = -4),
   "SN  alpha = +9"              = sn::rsn(20000, xi = sn_params(+9)$xi, omega = sn_params(+9)$omega, alpha = +9),
   "SN  alpha = -9"              = sn::rsn(20000, xi = sn_params(-9)$xi, omega = sn_params(-9)$omega, alpha = -9),
-  "χ² df=1 (std., right)"       = rchisq_std(20000, df = 1, mirror = FALSE),
-  "χ² df=1 (std., mirrored)"    = rchisq_std(20000, df = 1, mirror = TRUE)
+  "Chi-square df=1 (std., right)"       = rchisq_std(20000, df = 1, mirror = FALSE),
+  "Chi-square df=1 (std., mirrored)"    = rchisq_std(20000, df = 1, mirror = TRUE)
 )
 
 df_m <- dplyr::bind_rows(lapply(names(draws), function(nm) {
@@ -303,8 +305,8 @@ pal <- c("SN  alpha = +4"           = "#1b9e77",
          "SN  alpha = -4"           = "#1b9e77",
          "SN  alpha = +9"           = "#d95f02",
          "SN  alpha = -9"           = "#d95f02",
-         "χ² df=1 (std., right)"    = "#7570b3",
-         "χ² df=1 (std., mirrored)" = "#7570b3")
+         "Chi-square df=1 (std., right)"    = "#7570b3",
+         "Chi-square df=1 (std., mirrored)" = "#7570b3")
 
 ggplot(df_m, aes(value)) +
   geom_histogram(aes(y = after_stat(density), fill = dist),
@@ -321,7 +323,7 @@ ggplot(df_m, aes(value)) +
        x = "value", y = "density")
 ```
 
-## 2. Data Loading and Preparation
+# 2. Data Loading and Preparation
 
 ```{r load_data}
 #| label: load_data
@@ -336,8 +338,9 @@ cond_raw <- read_csv(files$cond, show_col_types = FALSE) |>
 
 # load replication-level summary (individual runs)
 rep_raw <- read_csv(files$rep, show_col_types = FALSE) |>
-    filter(!is.na(param)) |> # Filter out completely failed fits
-    left_join(design, by = "condition_id")
+  # NOTE: keep rows with param = NA so that failed fits (status != "ok") are
+  # retained for MCMC-status summaries and replication-count tables.
+  left_join(design, by = "condition_id")
 
 
 # define parameter order and groups

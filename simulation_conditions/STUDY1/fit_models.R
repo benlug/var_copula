@@ -98,6 +98,19 @@ fit_var1_copula_models <- function(data_dir,
     )
   }
 
+  ## -- deterministic init seeding ------------------------------------------
+  # Make random initial values reproducible under parallelism by seeding
+  # the R RNG deterministically for each (model, condition_id, rep_id, chain).
+  make_inits <- function(code, cid, rid, chains, seed_base_r = SEED_BASE_R) {
+    model_offset <- if (identical(code, "SG")) 100L else 200L
+    lapply(seq_len(chains), function(ch) {
+      seed_init <- as.integer(seed_base_r + model_offset + cid * 10000L + rid * 10L + ch)
+      if (is.na(seed_init) || seed_init <= 0L) seed_init <- as.integer(abs(seed_init) + 1L)
+      set.seed(seed_init)
+      if (identical(code, "SG")) make_init_SG() else make_init_NG()
+    })
+  }
+
   ## -- enumerate datasets ----------------------------------------------------
   paths <- list.files(data_dir, "^sim_data_cond\\d+_rep\\d+\\.rds$", full.names = TRUE)
   meta <- stringr::str_match(basename(paths), "cond(\\d+)_rep(\\d+)")
@@ -166,11 +179,7 @@ fit_var1_copula_models <- function(data_dir,
       # Prepare data and inits
       sdat <- sdat_base
       
-      if (code == "SG") {
-        inits <- replicate(chains, make_init_SG(), simplify = FALSE)
-      } else if (code == "NG") {
-        inits <- replicate(chains, make_init_NG(), simplify = FALSE)
-      }
+      inits <- make_inits(code, cid, rid, chains)
 
       if (!length(inits) || is.null(inits[[1]])) {
         msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL – init generation failed", code, cid, rid))
@@ -183,7 +192,9 @@ fit_var1_copula_models <- function(data_dir,
       try(saveRDS(
         list(
           meta = list(model = code, condition_id = cid, rep_id = rid, time = Sys.time()),
-          seeds_stan = seeds_stan, init = inits
+          seeds_stan = seeds_stan,
+          init_seeds = SEED_BASE_R + (if (identical(code, "SG")) 100L else 200L) + cid * 10000L + rid * 10L + seq_len(chains),
+          init = inits
         ),
         file.path(side_dir, sprintf("INIT_%s_cond%03d_rep%03d.rds", code, cid, rid))
       ), silent = TRUE)
@@ -254,12 +265,42 @@ fit_var1_copula_models <- function(data_dir,
                                   paste(unique(warn_msgs), collapse = " | ")))
         }
       } else if (inherits(fit, "error")) {
+        # Always write a canonical compact object at fit_path so downstream
+        # analysis can count failures deterministically (no silent exclusions).
+        fit_summary <- list(
+          summary = NULL,
+          n_div = NA_integer_,
+          max_rhat = NA_real_,
+          sampler_params = list(n_divergent = NA_integer_, max_treedepth_hits = NA_integer_),
+          model = code,
+          condition_id = cid,
+          rep_id = rid,
+          status = "error",
+          error = conditionMessage(fit),
+          warnings = unique(warn_msgs)
+        )
+        saveRDS(fit_summary, fit_path)
+
+        # Optional: also keep the raw error for debugging
         fail_path <- file.path(fits_dir, sprintf("fit_ERR_%s_cond%03d_rep%03d.rds", code, cid, rid))
-        saveRDS(fit, fail_path)
+        try(saveRDS(fit, fail_path), silent = TRUE)
         msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL – %s", code, cid, rid, conditionMessage(fit)))
       } else {
+        fit_summary <- list(
+          summary = NULL,
+          n_div = NA_integer_,
+          max_rhat = NA_real_,
+          sampler_params = list(n_divergent = NA_integer_, max_treedepth_hits = NA_integer_),
+          model = code,
+          condition_id = cid,
+          rep_id = rid,
+          status = "unexpected_return",
+          warnings = unique(warn_msgs)
+        )
+        saveRDS(fit_summary, fit_path)
+
         fail_path <- file.path(fits_dir, sprintf("fit_MISC_%s_cond%03d_rep%03d.rds", code, cid, rid))
-        saveRDS(fit, fail_path)
+        try(saveRDS(fit, fail_path), silent = TRUE)
         msgs <- c(msgs, sprintf("%s cond%03d rep%03d : FAIL – unexpected return type", code, cid, rid))
       }
     }

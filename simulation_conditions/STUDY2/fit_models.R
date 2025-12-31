@@ -21,7 +21,10 @@ fit_var1_copula_models <- function(data_dir,
                                    max_treedepth = 12,
                                    cores_outer = 2,
                                    start_condition = 1,
-                                   start_rep = 1) {
+                                   start_rep = 1,
+                                   save_level = c("summary", "stanfit"),
+                                   fit_compress = "xz",
+                                   save_init_sidecar = TRUE) {
   suppressPackageStartupMessages({
     if (!requireNamespace("rstan", quietly = TRUE)) stop("rstan package required.")
     if (!requireNamespace("stringr", quietly = TRUE)) stop("stringr package required.")
@@ -42,9 +45,53 @@ fit_var1_copula_models <- function(data_dir,
   SEED_BASE_STAN <- 5e6
   `%||%` <- function(a, b) if (!is.null(a)) a else b
 
+  # How much to save per fit file:
+  #   - "summary" : small RDS with only posterior summaries + key diagnostics (recommended for simulations)
+  #   - "stanfit" : full stanfit object (can be very large)
+  save_level <- match.arg(save_level)
+
+  # Parameters we actually need for downstream metrics.
+  CORE_PARS <- c("mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22", "rho")
+  WANT_FULL <- list(
+    NG = c(CORE_PARS, "sigma[1]", "sigma[2]"),
+    SG = c(CORE_PARS, "omega[1]", "omega[2]", "alpha[1]", "alpha[2]"),
+    EG = c(CORE_PARS, "sigma_exp[1]", "sigma_exp[2]")
+  )
+
+  # Injective seed mapping to avoid collisions if the grid expands.
+  seed_key <- function(cid, rid, chain = 0L) {
+    as.integer(cid) * 100000L + as.integer(rid) * 10L + as.integer(chain)
+  }
+
+  is_valid_fit_file <- function(x) {
+    if (inherits(x, "stanfit")) {
+      return(length(x@sim) > 0 && !is.null(x@sim$iter) && x@sim$iter > 0 && length(x@sim$samples) > 0)
+    }
+    if (is.list(x) && identical(x$type, "stan_fit_summary_v1")) {
+      return(is.data.frame(x$summary) && nrow(x$summary) > 0)
+    }
+    FALSE
+  }
+
+  extract_fit_summary <- function(fit, want_full) {
+    # rstan::summary() works on base parameter names; we then filter to exact indexed names.
+    base <- unique(sub("\\[.*$", "", want_full))
+    keep <- intersect(base, fit@model_pars)
+    if (!length(keep)) return(NULL)
+
+    s <- try(rstan::summary(fit, pars = keep)$summary, silent = TRUE)
+    if (inherits(s, "try-error")) return(NULL)
+
+    df <- as.data.frame(s, optional = TRUE)
+    df$param <- rownames(df)
+    rownames(df) <- NULL
+    df <- df[df$param %in% want_full, , drop = FALSE]
+    df
+  }
+
   side_dir <- file.path(results_dir, "init_sidecar")
   dir.create(fits_dir, FALSE, TRUE)
-  dir.create(side_dir, FALSE, TRUE)
+  if (isTRUE(save_init_sidecar)) dir.create(side_dir, FALSE, TRUE)
   log_file <- file.path(fits_dir, "stan_fit.log")
 
   ## -- compile or load cached models (hash by source) --------------------
@@ -206,10 +253,47 @@ fit_var1_copula_models <- function(data_dir,
     for (code in models_to_run) {
       fit_path <- file.path(fits_dir, sprintf("fit_%s_cond%03d_rep%03d.rds", code, cid, rid))
 
-      # Skip only if an existing file is a real stanfit; otherwise refit
+      # Parameters we care about for this model (used for lightweight summaries)
+      want_full <- WANT_FULL[[code]] %||% CORE_PARS
+
+      # Skip only if an existing file is a valid completed fit artifact; otherwise refit.
+      # If we are in "summary" mode and a legacy full stanfit exists, convert it in-place.
       if (file.exists(fit_path)) {
         chk <- try(readRDS(fit_path), silent = TRUE)
-        if (inherits(chk, "stanfit") && length(chk@sim) > 0 && length(chk@sim$samples) > 0) {
+        if (save_level == "summary" && inherits(chk, "stanfit") && is_valid_fit_file(chk)) {
+          # Convert existing full stanfit -> lightweight summary (reduces disk immediately, no refit)
+          divs_old <- tryCatch(
+            {
+              sp <- rstan::get_sampler_params(chk, inc_warmup = FALSE)
+              if (is.list(sp) && length(sp) > 0) sum(vapply(sp, function(x) sum(x[, "divergent__"]), 0L)) else NA_integer_
+            },
+            error = function(e) NA_integer_
+          )
+
+          sm_old <- extract_fit_summary(chk, want_full)
+          if (is.data.frame(sm_old) && nrow(sm_old) > 0) {
+            fit_light <- list(
+              type = "stan_fit_summary_v1",
+              model = code,
+              condition_id = cid,
+              rep_id = rid,
+              time_saved = Sys.time(),
+              stan_config = list(
+                chains = chains, iter = iter, warmup = warmup,
+                adapt_delta = adapt_delta, max_treedepth = max_treedepth
+              ),
+              seeds_stan = NA,
+              n_div = divs_old,
+              warnings = character(),
+              summary = sm_old
+            )
+            saveRDS(fit_light, fit_path, compress = fit_compress)
+            msgs <- c(msgs, sprintf("%s cond%03d rep%03d : CONVERT existing stanfit -> summary", code, cid, rid))
+            next
+          }
+          # If summary extraction fails, fall through to the standard validity check.
+        }
+        if (is_valid_fit_file(chk)) {
           msgs <- c(msgs, sprintf("%s cond%03d rep%03d : skip (exists)", code, cid, rid))
           next
         } else {
@@ -221,9 +305,13 @@ fit_var1_copula_models <- function(data_dir,
       # EG needs skew_direction in data and eta init
       if (code == "EG") {
         sdat$skew_direction <- skew_directions
-        inits <- lapply(seq_len(chains), function(k) make_init_EG(y_matrix, cid * 1000 + rid * 10 + k, skew_directions))
+        # chain-specific init seeds (injective mapping; avoids collisions across datasets)
+        inits <- lapply(seq_len(chains), function(k) {
+          make_init_EG(y_matrix, seed_key(cid, rid, k), skew_directions)
+        })
       } else {
-        set.seed(SEED_BASE_R + cid * 1000 + rid) # reproducible inits per dataset
+        # reproducible inits per dataset
+        set.seed(SEED_BASE_R + seed_key(cid, rid, 0L))
         inits <- replicate(chains, make_init(code), simplify = FALSE)
       }
 
@@ -232,16 +320,18 @@ fit_var1_copula_models <- function(data_dir,
         next
       }
 
-      seeds_stan <- SEED_BASE_STAN + cid * 1000 + rid + 0:(chains - 1)
+      seeds_stan <- SEED_BASE_STAN + seed_key(cid, rid, 0L) + 0:(chains - 1)
 
-      # Save init sidecar (for debugging/repro)
-      try(saveRDS(
-        list(
-          meta = list(model = code, condition_id = cid, rep_id = rid, time = Sys.time()),
-          seeds_stan = seeds_stan, init = inits
-        ),
-        file.path(side_dir, sprintf("INIT_%s_cond%03d_rep%03d.rds", code, cid, rid))
-      ), silent = TRUE)
+      # Save init sidecar (optional; useful for debugging/repro, but can be disk-heavy at scale)
+      if (isTRUE(save_init_sidecar)) {
+        try(saveRDS(
+          list(
+            meta = list(model = code, condition_id = cid, rep_id = rid, time = Sys.time()),
+            seeds_stan = seeds_stan, init = inits
+          ),
+          file.path(side_dir, sprintf("INIT_%s_cond%03d_rep%03d.rds", code, cid, rid))
+        ), silent = TRUE)
+      }
 
       ## --- sampling (catch errors, NOT warnings) -----------------------
       warn_msgs <- character()
@@ -266,10 +356,7 @@ fit_var1_copula_models <- function(data_dir,
       )
 
       if (inherits(fit, "stanfit") && length(fit@sim) > 0 && length(fit@sim$samples) > 0) {
-        # Save the successful fit
-        saveRDS(fit, fit_path)
-
-        # Divergence count
+        # Divergence count (post-warmup)
         divs <- tryCatch(
           {
             sp <- rstan::get_sampler_params(fit, inc_warmup = FALSE)
@@ -277,6 +364,37 @@ fit_var1_copula_models <- function(data_dir,
           },
           error = function(e) NA_integer_
         )
+
+        if (save_level == "stanfit") {
+          # Full stanfit (can be very large)
+          saveRDS(fit, fit_path, compress = fit_compress)
+        } else {
+          # Lightweight artifact: posterior summaries for parameters we need + key diagnostics
+          want_full <- WANT_FULL[[code]] %||% CORE_PARS
+          sm_df <- extract_fit_summary(fit, want_full)
+          if (is.null(sm_df) || !nrow(sm_df)) {
+            # If summary extraction fails, fall back to saving the full fit (so we don't silently lose information)
+            saveRDS(fit, fit_path, compress = fit_compress)
+            msgs <- c(msgs, sprintf("%s cond%03d rep%03d : WARN – summary extraction failed; saved full stanfit", code, cid, rid))
+          } else {
+            fit_light <- list(
+              type = "stan_fit_summary_v1",
+              model = code,
+              condition_id = cid,
+              rep_id = rid,
+              time_saved = Sys.time(),
+              stan_config = list(
+                chains = chains, iter = iter, warmup = warmup,
+                adapt_delta = adapt_delta, max_treedepth = max_treedepth
+              ),
+              seeds_stan = seeds_stan,
+              n_div = divs,
+              warnings = unique(warn_msgs),
+              summary = sm_df
+            )
+            saveRDS(fit_light, fit_path, compress = fit_compress)
+          }
+        }
 
         msgs <- c(msgs, sprintf(
           "%s cond%03d rep%03d : OK (%s div)",

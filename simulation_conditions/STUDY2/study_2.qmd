@@ -93,7 +93,7 @@ $$
 
 where $s_j=-1$ indicates a mirrored (left-skew) margin.
 
-**Implementation in this report.** All bias and coverage summaries for the copula parameter use $\rho_{\mathrm{eff}}$ as the target in mixed-direction cells. The facet labels still display the *input* $\rho\in\{0.30,0.50\}$ so that the grid remains comparable to Study 1.
+**Implementation in this report.** All bias and coverage summaries for the copula parameter use $\rho_{\mathrm{eff}}$ as the target in mixed-direction cells. In the key simulation plots, the *input* $\rho\in\{0.30,0.50\}$ is encoded by **line type** (rather than an additional facet dimension) to keep panels readable.
 
 **Nuance.** This is a parameterization issue, not a sampling pathology: if one compares estimates of $\rho$ to the unadjusted input value in mixed-direction cells, the plots will show an apparent “sign reversal” and near-zero coverage even when the model is correctly specified for the mirrored margins.
 :::
@@ -368,36 +368,114 @@ ggplot(div_dist_data, aes(x = T, y = n_div_clean, fill = Model)) +
 ```{r analysis_helpers}
 #| label: analysis_helpers
 
-theme_standard <- theme_bw(base_size = 14)
-dodge_width <- 0.3
+theme_standard <- theme_bw(base_size = 14) +
+  theme(legend.position = "bottom")
 
-plot_metric <- function(data, metric_col, ylab, title, use_free_y = FALSE, ylims = NULL) {
-  data_filtered <- data |> filter(!is.na(.data[[metric_col]]))
+# A more compact theme for many-facet simulation figures
+theme_facet <- theme_bw(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.margin = margin(t = 2, r = 0, b = 0, l = 0, unit = "pt"),
+    strip.text.x = element_text(size = 9),
+    strip.text.y = element_text(size = 9),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 10),
+    panel.spacing = grid::unit(0.7, "lines")
+  )
 
-  if (nrow(data_filtered) == 0) {
+# Compact labellers to avoid unreadable facet strips
+lab_short <- labeller(
+  direction = function(x) x,
+  VARset    = function(x) paste0("VAR ", x),
+  rho       = function(x) paste0("rho=", x),
+  param     = function(x) x
+)
+
+# Readable metric plot: facet by (direction x VARset), encode input rho by linetype
+plot_metric_readable <- function(data,
+                                 metric_col,
+                                 ylab,
+                                 title,
+                                 params = NULL,
+                                 use_free_y = FALSE,
+                                 ylims = NULL) {
+  df <- data |>
+    filter(!is.na(.data[[metric_col]]))
+
+  if (!is.null(params)) {
+    df <- df |> filter(param %in% params)
+  }
+
+  if (nrow(df) == 0) {
     message("Skipping plot '", title, "' due to missing data.")
     return(NULL)
   }
 
-  p <- ggplot(data_filtered, aes(x = T, y = .data[[metric_col]], color = Model, group = Model)) +
-    geom_line(position = position_dodge(dodge_width), linewidth = 1) +
-    geom_point(position = position_dodge(dodge_width), size = 2.5) +
+  # If rho is available, use linetype to avoid exploding the facet grid.
+  has_rho <- "rho" %in% names(df)
+
+  if (has_rho) {
+    p <- ggplot(
+      df,
+      aes(
+        x = T,
+        y = .data[[metric_col]],
+        color = Model,
+        linetype = rho,
+        group = interaction(Model, rho)
+      )
+    )
+  } else {
+    p <- ggplot(
+      df,
+      aes(
+        x = T,
+        y = .data[[metric_col]],
+        color = Model,
+        group = Model
+      )
+    )
+  }
+
+  p <- p +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2.2) +
     facet_grid(
-      param ~ direction + VARset + rho,
-      labeller = label_both,
+      param ~ direction + VARset,
+      labeller = lab_short,
       scales = ifelse(use_free_y, "free_y", "fixed")
     ) +
-    theme_standard +
-    labs(title = title, y = ylab, x = "Time series length (T)")
+    theme_facet +
+    scale_color_brewer(palette = "Dark2") +
+    labs(
+      title = title,
+      y = ylab,
+      x = "Time series length (T)",
+      linetype = "Input rho"
+    )
 
-  if (metric_col %in% c("mean_rel_bias", "sd_bias")) {
-    p <- p + geom_hline(yintercept = 0, linetype = "dashed", color = "darkgrey")
+  if (has_rho) {
+    p <- p + scale_linetype_discrete(labels = function(x) paste0("rho=", x))
+  }
+
+  # Reference lines
+  if (metric_col %in% c("mean_rel_bias", "sd_bias", "mean_bias")) {
+    p <- p + geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")
   } else if (metric_col == "coverage_95") {
-    p <- p + geom_hline(yintercept = 0.95, linetype = "dashed", color = "darkgrey")
+    p <- p + geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey50")
   }
 
   if (!is.null(ylims)) {
     p <- p + coord_cartesian(ylim = ylims)
+  }
+
+  # Drop legends that would be redundant
+  if (dplyr::n_distinct(df$Model) == 1) {
+    p <- p + guides(color = "none")
+  }
+  if (!has_rho || dplyr::n_distinct(df$rho) == 1) {
+    p <- p + guides(linetype = "none")
   }
 
   p
@@ -438,15 +516,46 @@ cond_core <- rep_df |>
 
 ## 4.1 Relative bias
 
-```{r exp_bias, fig.height=12, fig.width=16}
-#| label: exp_bias
+To improve readability, we (i) facet by **direction x VAR set** and (ii) encode the input copula parameter value ($\rho\in\{0.30,0.50\}$) using **line type** rather than adding another facet dimension.
+
+```{r exp_bias_rho, fig.height=4.5, fig.width=12}
+#| label: exp_bias_rho
 #| echo: false
 
-plot_metric(
+plot_metric_readable(
   cond_core,
   metric_col = "mean_rel_bias",
   ylab = "Mean relative bias",
-  title = "Relative bias (Study 2: Exponential DGP)",
+  title = "Relative bias: dependence parameter rho",
+  params = "rho",
+  use_free_y = FALSE
+)
+```
+
+```{r exp_bias_phi, fig.height=9.5, fig.width=12}
+#| label: exp_bias_phi
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "mean_rel_bias",
+  ylab = "Mean relative bias",
+  title = "Relative bias: VAR coefficients (Phi elements)",
+  params = c("phi11", "phi12", "phi21", "phi22"),
+  use_free_y = TRUE
+)
+```
+
+```{r exp_bias_mu, fig.height=6.0, fig.width=12}
+#| label: exp_bias_mu
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "mean_rel_bias",
+  ylab = "Mean bias (truth = 0)",
+  title = "Bias: intercepts (mu)",
+  params = c("mu[1]", "mu[2]"),
   use_free_y = TRUE
 )
 ```
@@ -455,15 +564,44 @@ plot_metric(
 
 ## 4.2 95% coverage
 
-```{r exp_coverage, fig.height=12, fig.width=16}
-#| label: exp_coverage
+```{r exp_coverage_rho, fig.height=4.5, fig.width=12}
+#| label: exp_coverage_rho
 #| echo: false
 
-plot_metric(
+plot_metric_readable(
   cond_core,
   metric_col = "coverage_95",
-  ylab = "Empirical coverage",
-  title = "95% interval coverage (Study 2: Exponential DGP)",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: dependence parameter rho",
+  params = "rho",
+  ylims = c(0.5, 1.0)
+)
+```
+
+```{r exp_coverage_phi, fig.height=9.5, fig.width=12}
+#| label: exp_coverage_phi
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "coverage_95",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: VAR coefficients (Phi elements)",
+  params = c("phi11", "phi12", "phi21", "phi22"),
+  ylims = c(0.5, 1.0)
+)
+```
+
+```{r exp_coverage_mu, fig.height=6.0, fig.width=12}
+#| label: exp_coverage_mu
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "coverage_95",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: intercepts (mu)",
+  params = c("mu[1]", "mu[2]"),
   ylims = c(0.5, 1.0)
 )
 ```
@@ -472,15 +610,44 @@ plot_metric(
 
 ## 4.3 SD-bias
 
-```{r exp_sdbias, fig.height=12, fig.width=16}
-#| label: exp_sdbias
+```{r exp_sdbias_rho, fig.height=4.5, fig.width=12}
+#| label: exp_sdbias_rho
 #| echo: false
 
-plot_metric(
+plot_metric_readable(
   cond_core,
   metric_col = "sd_bias",
-  ylab = "SD-bias (mean posterior SD − empirical SD)",
-  title = "SD-bias (Study 2: Exponential DGP)",
+  ylab = "SD-bias (posterior SD − empirical SD)",
+  title = "SD-bias: dependence parameter rho",
+  params = "rho",
+  use_free_y = FALSE
+)
+```
+
+```{r exp_sdbias_phi, fig.height=9.5, fig.width=12}
+#| label: exp_sdbias_phi
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "sd_bias",
+  ylab = "SD-bias (posterior SD − empirical SD)",
+  title = "SD-bias: VAR coefficients (Phi elements)",
+  params = c("phi11", "phi12", "phi21", "phi22"),
+  use_free_y = TRUE
+)
+```
+
+```{r exp_sdbias_mu, fig.height=6.0, fig.width=12}
+#| label: exp_sdbias_mu
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "sd_bias",
+  ylab = "SD-bias (posterior SD − empirical SD)",
+  title = "SD-bias: intercepts (mu)",
+  params = c("mu[1]", "mu[2]"),
   use_free_y = TRUE
 )
 ```
@@ -491,7 +658,7 @@ plot_metric(
 
 We report mean bias for the Exponential scale parameters in EG ($\sigma_{\mathrm{exp}}$) and the innovation standard deviations in NG ($\sigma$). Under the standardized DGP, the reference value is 1.
 
-```{r marginal_params, fig.height=8, fig.width=16}
+```{r marginal_params, fig.height=7.5, fig.width=12}
 #| label: marginal_params
 #| echo: false
 
@@ -504,21 +671,20 @@ sigma_exp_data <- cond_all |>
   filter(param %in% c("sigma_exp[1]", "sigma_exp[2]"), Model == "Exponential–Gaussian (EG)")
 
 if (nrow(sigma_exp_data) > 0) {
-  print(
-    plot_metric(
-      sigma_exp_data,
-      metric_col = "mean_bias",
-      ylab = "Mean bias (estimate − 1)",
-      title = "EG: bias for sigma_exp (truth = 1)",
-      use_free_y = TRUE
-    )
+  plot_metric_readable(
+    sigma_exp_data,
+    metric_col = "mean_bias",
+    ylab = "Mean bias (estimate − 1)",
+    title = "EG: bias for sigma_exp (truth = 1)",
+    params = c("sigma_exp[1]", "sigma_exp[2]"),
+    use_free_y = TRUE
   )
 } else {
   message("No EG marginal scale parameters available.")
 }
 ```
 
-```{r marginal_params_ng, fig.height=8, fig.width=16}
+```{r marginal_params_ng, fig.height=7.5, fig.width=12}
 #| label: marginal_params_ng
 #| echo: false
 
@@ -527,14 +693,13 @@ sigma_ng_data <- cond_all |>
   filter(param %in% c("sigma[1]", "sigma[2]"), Model == "Normal–Gaussian (NG)")
 
 if (nrow(sigma_ng_data) > 0) {
-  print(
-    plot_metric(
-      sigma_ng_data,
-      metric_col = "mean_bias",
-      ylab = "Mean bias (estimate − 1)",
-      title = "NG: bias for sigma (truth = 1)",
-      use_free_y = TRUE
-    )
+  plot_metric_readable(
+    sigma_ng_data,
+    metric_col = "mean_bias",
+    ylab = "Mean bias (estimate − 1)",
+    title = "NG: bias for sigma (truth = 1)",
+    params = c("sigma[1]", "sigma[2]"),
+    use_free_y = TRUE
   )
 } else {
   message("No NG marginal SD parameters available.")
@@ -545,29 +710,49 @@ if (nrow(sigma_ng_data) > 0) {
 
 ## 6.1 Coverage split: Clean vs Problematic
 
-```{r coverage_status_split, fig.height=8, fig.width=16}
+The full factorial design implies many small facets if we stratify coverage simultaneously by parameter, direction, VAR set, and the input copula correlation. For readability, the figure below *pools across direction and VAR set* and shows coverage trajectories by **MCMC status** (Clean vs Problematic), with the input $\\rho$ encoded by line type.
+
+```{r coverage_status_split, fig.height=7.5, fig.width=12}
 #| label: coverage_status_split
 #| echo: false
 
 cond_status <- rep_df |>
-  filter(param %in% core_params, Model == "Exponential–Gaussian (EG)", mcmc_status != "Failed/Error") |>
-  group_by(T, skew_level, direction, VARset, rho, param, mcmc_status) |>
-  summarise(coverage_95 = mean(cover95_eff, na.rm = TRUE), .groups = "drop")
+  filter(
+    param %in% core_params,
+    Model == "Exponential–Gaussian (EG)",
+    mcmc_status %in% c("Clean", "Problematic")
+  ) |>
+  group_by(T, param, mcmc_status, rho) |>
+  summarise(
+    coverage_95 = mean(cover95_eff, na.rm = TRUE),
+    N = n(),
+    .groups = "drop"
+  )
 
 if (nrow(cond_status) > 0 && length(unique(cond_status$mcmc_status)) > 1) {
-  ggplot(cond_status, aes(x = T, y = coverage_95, color = mcmc_status, group = mcmc_status)) +
+  ggplot(
+    cond_status,
+    aes(
+      x = T,
+      y = coverage_95,
+      color = mcmc_status,
+      linetype = rho,
+      group = interaction(mcmc_status, rho)
+    )
+  ) +
     geom_line(linewidth = 1) +
-    geom_point(size = 2.5) +
-    geom_hline(yintercept = 0.95, linetype = "dashed", color = "darkgrey") +
-    facet_grid(param ~ direction + VARset + rho, labeller = label_both) +
+    geom_point(size = 2.2) +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey50") +
+    facet_wrap(~ param, ncol = 3, scales = "fixed") +
     theme_standard +
     labs(
-      title = "EG coverage by MCMC status (Clean vs Problematic)",
+      title = "EG 95% coverage by MCMC status (pooled over direction and VAR set)",
       y = "Empirical coverage",
       x = "Time series length (T)",
-      color = "MCMC status"
+      color = "MCMC status",
+      linetype = "Input rho"
     ) +
-    coord_cartesian(ylim = c(0.8, 1.0))
+    coord_cartesian(ylim = c(0.5, 1.0))
 } else {
   message("Insufficient EG status diversity for a split-by-status coverage plot.")
 }

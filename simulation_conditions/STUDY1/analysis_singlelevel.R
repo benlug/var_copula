@@ -35,13 +35,47 @@ CORE <- c("mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22", "rho")
 SIGMA_NG <- c("sigma[1]", "sigma[2]")
 EXTRA_SG <- c("omega[1]", "omega[2]", "alpha[1]", "alpha[2]")
 
-# ── Enumerate fits --------------------------------------------------------
-fits <- list.files(FITS_DIR, "^fit_(SG|NG)_cond\\d+_rep\\d+\\.rds$",
-                   full.names = TRUE)
+# ── Enumerate expected fits (include missing) -----------------------------
+# Goal: avoid selection bias from silently excluding failed/missing fits.
+design_path <- file.path(DATA_DIR, "sim_conditions_singlelevel.rds")
+design <- if (file.exists(design_path)) safe_read(design_path) else NULL
 
-if (length(fits) == 0) {
-  message("No fit files found in ", FITS_DIR)
-  if (sys.nframe() == 0) q(status = 1) else return(invisible())
+expected <- NULL
+
+if (!is.null(design) && !inherits(design, "error") &&
+    all(c("condition_id", "n_reps") %in% names(design))) {
+
+  expected_base <- design |>
+    transmute(
+      condition_id = as.integer(condition_id),
+      n_reps = as.integer(n_reps)
+    ) |>
+    tidyr::uncount(weights = n_reps, .id = "rep_id") |>
+    select(condition_id, rep_id)
+
+  expected <- tidyr::crossing(expected_base, model = c("SG", "NG")) |>
+    arrange(condition_id, rep_id, model) |>
+    mutate(
+      fit_path = file.path(
+        FITS_DIR,
+        sprintf("fit_%s_cond%03d_rep%03d.rds", model, condition_id, rep_id)
+      )
+    )
+} else {
+  # Fallback: only enumerate existing fit files
+  fits <- list.files(FITS_DIR, "^fit_(SG|NG)_cond\\d+_rep\\d+\\.rds$", full.names = TRUE)
+  if (length(fits) == 0) {
+    message("No fit files found in ", FITS_DIR)
+    if (sys.nframe() == 0) q(status = 1) else return(invisible())
+  }
+  meta <- str_match(basename(fits), "fit_(SG|NG)_cond(\\d+)_rep(\\d+)\\.rds")
+  expected <- tibble(
+    model = meta[, 2],
+    condition_id = as.integer(meta[, 3]),
+    rep_id = as.integer(meta[, 4]),
+    fit_path = fits
+  ) |>
+    arrange(condition_id, rep_id, model)
 }
 
 # ── Simulation cache ------------------------------------------------------
@@ -57,15 +91,30 @@ load_sim <- function(cid, rid) {
   get(key, sim_env, inherits = FALSE)
 }
 
-message("Analysing ", length(fits), " fits...")
-rows <- vector("list", length(fits))
+message("Analysing ", nrow(expected), " expected fits (including missing)...")
+rows <- vector("list", nrow(expected))
 
-for (i in seq_along(fits)) {
-  fp <- fits[i]
-  m <- str_match(basename(fp), "fit_(SG|NG)_cond(\\d+)_rep(\\d+)\\.rds")
-  model <- m[2]
-  cid <- as.integer(m[3])
-  rid <- as.integer(m[4])
+for (i in seq_len(nrow(expected))) {
+  fp <- expected$fit_path[i]
+  model <- as.character(expected$model[i])
+  cid <- as.integer(expected$condition_id[i])
+  rid <- as.integer(expected$rep_id[i])
+
+  # Missing fit file
+  if (!file.exists(fp)) {
+    # Backwards-compatibility: older fitting scripts wrote failures to
+    # fit_ERR_* / fit_MISC_* without creating the canonical fit_* file.
+    fp_err  <- file.path(FITS_DIR, sprintf("fit_ERR_%s_cond%03d_rep%03d.rds", model, cid, rid))
+    fp_misc <- file.path(FITS_DIR, sprintf("fit_MISC_%s_cond%03d_rep%03d.rds", model, cid, rid))
+    legacy_status <- if (file.exists(fp_err)) "legacy_error" else if (file.exists(fp_misc)) "legacy_misc" else "missing_fit"
+
+    rows[[i]] <- tibble(
+      model, condition_id = cid, rep_id = rid,
+      param = NA_character_, status = legacy_status,
+      n_div = NA_integer_, max_rhat = NA_real_
+    )
+    next
+  }
 
   fit_data <- safe_read(fp)
   
@@ -192,7 +241,7 @@ for (i in seq_along(fits)) {
   
   rows[[i]] <- result
 
-  if (i %% 500 == 0) message(sprintf("... processed %d/%d", i, length(fits)))
+  if (i %% 500 == 0) message(sprintf("... processed %d/%d", i, nrow(expected)))
 }
 
 rep_tbl <- bind_rows(rows)
@@ -203,6 +252,25 @@ if ("cover95" %in% names(rep_tbl) && is.logical(rep_tbl$cover95)) {
 }
 
 write_csv(rep_tbl, file.path(RES_DIR, "summary_replications.csv"))
+
+# One-row-per-fit status table (includes missing fits)
+fit_status <- rep_tbl |>
+  distinct(model, condition_id, rep_id, status, n_div, max_rhat)
+
+write_csv(fit_status, file.path(RES_DIR, "fit_status_by_replication.csv"))
+
+fit_status_cond <- fit_status |>
+  group_by(condition_id, model) |>
+  summarise(
+    N_expected = n(),
+    N_ok = sum(status == "ok"),
+    N_missing_fit = sum(status == "missing_fit"),
+    N_not_ok = sum(status != "ok" & status != "missing_fit"),
+    prop_ok = ifelse(N_expected > 0, N_ok / N_expected, NA_real_),
+    .groups = "drop"
+  )
+
+write_csv(fit_status_cond, file.path(RES_DIR, "fit_status_by_condition.csv"))
 
 message("Fit status summary:")
 print(table(rep_tbl$status, useNA = "ifany"))
@@ -231,6 +299,10 @@ if (any(good)) {
   # Replace NaN with NA
   cond <- cond |>
     mutate(across(where(is.numeric), ~ ifelse(is.nan(.), NA_real_, .)))
+
+  # Attach denominators for transparency (same for all params within a cell)
+  cond <- cond |>
+    left_join(fit_status_cond, by = c("condition_id", "model"))
 
   write_csv(cond, file.path(RES_DIR, "summary_conditions.csv"))
   message("Wrote ", nrow(cond), " condition rows to summary_conditions.csv")

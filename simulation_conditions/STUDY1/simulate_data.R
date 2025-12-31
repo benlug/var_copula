@@ -106,7 +106,22 @@ verify_copula_correlation <- function(n_test = 10000, m1, m2, copula_rho, tol = 
 ## ========================================================================
 ## 4. Single replication (one design row, one rep)
 ## ========================================================================
-simulate_one_replication <- function(cond_row, rep_i, output_dir, burnin = 100) {
+simulate_one_replication <- function(cond_row, rep_i, output_dir, burnin = 100,
+                                     seed_base = 2025000L) {
+  # ---------------------------------------------------------------------
+  # Deterministic per-(condition, replication) seeding
+  # ---------------------------------------------------------------------
+  # Rationale: the simulation must be reproducible regardless of resume/
+  # execution order. We therefore set the RNG seed inside each replication
+  # using a deterministic mapping from (condition_id, rep_i).
+  #
+  # NOTE: keep the seed comfortably within 32-bit integer range.
+  cid <- as.integer(cond_row$condition_id)
+  rid <- as.integer(rep_i)
+  seed <- as.integer(seed_base + cid * 10000L + rid)
+  if (is.na(seed) || seed <= 0L) seed <- as.integer(abs(seed) + 1L)
+  set.seed(seed)
+
   # Process intercept (0 since innovations are standardized to mean 0)
   mu_vec <- c(0, 0)
   phi_mat <- cond_row$phi_matrix[[1]]
@@ -132,6 +147,7 @@ simulate_one_replication <- function(cond_row, rep_i, output_dir, burnin = 100) 
   out <- list(
     condition_id = cond_row$condition_id,
     rep_i = rep_i,
+    seed = seed,
     N = 1,
     T = T_time,
     data = data.frame(

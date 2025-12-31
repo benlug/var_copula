@@ -35,6 +35,10 @@ safe_read <- function(p) tryCatch(readRDS(p), error = function(e) e)
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
 count_div <- function(fit) {
+  # Lightweight fit artifact (saved by fit_models.R in "summary" mode)
+  if (is.list(fit) && identical(fit$type, "stan_fit_summary_v1")) {
+    return(as.integer(fit$n_div %||% NA_integer_))
+  }
   if (!inherits(fit, "stanfit")) {
     return(NA_integer_)
   }
@@ -49,6 +53,16 @@ count_div <- function(fit) {
 }
 
 max_rhat <- function(fit) {
+  # Lightweight fit artifact
+  if (is.list(fit) && identical(fit$type, "stan_fit_summary_v1")) {
+    s <- fit$summary
+    if (is.data.frame(s) && ("Rhat" %in% names(s))) {
+      r <- suppressWarnings(as.numeric(s$Rhat))
+      r <- r[is.finite(r)]
+      return(if (length(r)) max(r) else NA_real_)
+    }
+    return(NA_real_)
+  }
   if (!inherits(fit, "stanfit")) {
     return(NA_real_)
   }
@@ -60,6 +74,15 @@ max_rhat <- function(fit) {
 }
 
 quick_summary <- function(fit, want_full) {
+  # Lightweight fit artifact
+  if (is.list(fit) && identical(fit$type, "stan_fit_summary_v1")) {
+    s <- fit$summary
+    if (!is.data.frame(s)) return(NULL)
+    if (!"param" %in% names(s)) {
+      s <- tibble::rownames_to_column(s, "param")
+    }
+    return(dplyr::filter(s, param %in% want_full))
+  }
   base <- unique(sub("\\[.*$", "", want_full))
   keep <- intersect(base, fit@model_pars)
   if (!length(keep)) {
@@ -121,8 +144,10 @@ for (i in seq_along(fits)) {
   rid <- as.integer(m[4])
 
   fit <- safe_read(fp)
-  # (Status check logic remains the same)
-  stat <- if (inherits(fit, "stanfit")) {
+  # Fit artifacts can be either full stanfit objects or lightweight summaries
+  stat <- if (is.list(fit) && identical(fit$type, "stan_fit_summary_v1")) {
+    if (is.data.frame(fit$summary) && nrow(fit$summary) > 0) "ok" else "empty"
+  } else if (inherits(fit, "stanfit")) {
     if (length(fit@sim) > 0 && !is.null(fit@sim$iter) && fit@sim$iter > 0 && length(fit@sim$samples) > 0) {
       "ok"
     } else {
@@ -179,11 +204,22 @@ for (i in seq_along(fits)) {
   true_sigma_exp <- if (is_exponential_dgp) 1 else NA_real_
 
   # Define the truth vector (CORE parameters)
+  # --- Effective copula rho (accounts for mirroring) --------------------
+  # Mirroring exactly one margin is a monotone-decreasing transform of its copula U,
+  # which flips the sign of the Gaussian copula parameter on the latent-normal scale.
+  # Target for evaluation is rho_eff = s1 * s2 * rho, where s_j = -1 if mirrored.
+  m1_mirror <- sim$true_params$margin1$mirror %||% FALSE
+  m2_mirror <- sim$true_params$margin2$mirror %||% FALSE
+  s1 <- if (isTRUE(m1_mirror)) -1 else 1
+  s2 <- if (isTRUE(m2_mirror)) -1 else 1
+  rho_eff <- s1 * s2 * sim$rho
+
+  # Define the truth vector (CORE parameters)
   truth <- c(
     `mu[1]` = 0, `mu[2]` = 0, # Standardized data
     phi11 = sim$phi_matrix[1, 1], phi12 = sim$phi_matrix[1, 2],
     phi21 = sim$phi_matrix[2, 1], phi22 = sim$phi_matrix[2, 2],
-    rho = sim$rho
+    rho = rho_eff
   )
 
   # Append model-specific parameters
@@ -266,12 +302,18 @@ print(table(Status = rep_tbl$status, Model = rep_tbl$model, useNA = "ifany"))
 # Aggregate results
 good <- rep_tbl$status == "ok" & !is.na(rep_tbl$param)
 if (any(good)) {
+  first_non_na <- function(x) {
+    x <- x[!is.na(x)]
+    if (!length(x)) NA_real_ else x[1]
+  }
+
   cond <- rep_tbl |>
     filter(good) |>
     group_by(condition_id, model, param) |>
     summarise(
       N_valid = n(),
       N_truth_avail = sum(!is.na(truth)),
+      truth = first_non_na(truth),
       # Use na.rm=TRUE as truth might be NA for misspecified models
       mean_bias = mean(bias, na.rm = TRUE),
       mean_rel_bias = mean(rel_bias, na.rm = TRUE),

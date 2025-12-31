@@ -57,7 +57,11 @@ RUN_VISUALIZATION <- FALSE # Visualization script requires significant updates
 
 REPS_PER_CELL <- 200
 NUM_CORES_OUT <- max(1, parallel::detectCores() - 1)
-set.seed(2026) # New seed for Study 2
+
+# Global seed is only used for non-simulation randomness (e.g., any incidental sampling)
+# Simulation itself is deterministically seeded per (condition_id, rep_id) inside simulate_data.R.
+SEED_BASE_SIM <- 2026L
+set.seed(SEED_BASE_SIM)
 
 ## =======================================================================
 ## 1 · Design grid (Study II) --------------------------------------------
@@ -117,7 +121,8 @@ if (RUN_SIM) {
     sim_conditions_df = design_grid,
     output_dir        = DATA_DIR,
     start_condition   = START_COND,
-    start_rep         = START_REP
+    start_rep         = START_REP,
+    seed_base         = SEED_BASE_SIM
   )
 }
 
