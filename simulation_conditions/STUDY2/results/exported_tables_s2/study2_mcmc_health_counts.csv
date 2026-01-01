@@ -1,0 +1,7 @@
+Model,T,skew_level,Clean
+Normal–Gaussian (NG),50,Exponential,2400
+Normal–Gaussian (NG),100,Exponential,2400
+Normal–Gaussian (NG),200,Exponential,2400
+Exponential–Gaussian (EG),50,Exponential,2400
+Exponential–Gaussian (EG),100,Exponential,2400
+Exponential–Gaussian (EG),200,Exponential,2400

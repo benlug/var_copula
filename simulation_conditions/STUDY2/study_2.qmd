@@ -1,12 +1,6 @@
 ---
-title: "Study 2: Normal–Gaussian vs Exponential–Gaussian Copula VAR Under Exponential Innovations"
+title: "Study 2: Comparative Performance of Normal–Gaussian and Exponential–Gaussian Copula VAR Models Under Exponential Innovations"
 format:
-  html:
-    toc: true
-    toc_depth: 3
-    code-fold: true
-    theme: lumen
-    self-contained: true
   pdf:
     toc: true
     toc_depth: 3
@@ -17,6 +11,7 @@ execute:
 
 ```{r setup}
 #| label: setup
+#| echo: false
 suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
@@ -68,64 +63,74 @@ if (is.na(files$design) || !all(file.exists(unlist(files)))) {
 }
 ```
 
-# 0. tl;dr
+# 0. Summary
 
-Across the design considered here (bivariate VAR(1), standardized Exponential margins, Gaussian copula dependence):
+## 0.1 Computational Stability versus Statistical Inference
 
-- **EG (Exponential–Gaussian)** is (i) approximately unbiased for the VAR dynamics $\Phi$ and intercepts $\mu$, and (ii) well calibrated for dependence when $\rho$ is interpreted on the correct scale in mixed-direction cells (see the callout below). Empirical coverage is close to 0.95 in most panels.
-- **NG (Normal–Gaussian)** is computationally stable but exhibits **attenuation** in $|\rho|$ and corresponding under-coverage for $\rho$ under Exponential margins. Effects on $\Phi$ are materially smaller than for $\rho$.
-- **Computation:** EG has more post-warmup divergences at small $T$, but (in this design) “Problematic” EG runs often have similar coverage to “Clean” EG runs.
+Both models exhibit excellent computational stability across all simulation conditions. The Normal–Gaussian (NG) model shows no post-warmup divergent transitions and max $\hat{R} \leq 1.01$ in all replications. The Exponential–Gaussian (EG) model is equally well-behaved, with zero divergent transitions and good convergence diagnostics. This is an improvement over the SG model under extremeCHI in Study 1, where divergences were frequent.
+
+## 0.2 Model Performance Under Exponential Innovations
+
+**Exponential–Gaussian (EG):** EG is (i) approximately unbiased for the VAR dynamics $\Phi$ and intercepts $\mu$, and (ii) well calibrated for dependence when $\rho$ is interpreted on the correct scale in mixed-direction cells (see Section 1.1 for the sign convention under mirroring). Empirical coverage is close to 0.95 in most conditions
+
+**Normal–Gaussian (NG):** NG is computationally stable but exhibits attenuation in $|\rho|$ and corresponding under-coverage for $\rho$ under Exponential margins. This attenuation arises from PIT distortion (see Study 1, Section 6.1).
+
+## 0.3 Insights
+
+PIT distortion induced by marginal CDF misspecification is the dominant failure mechanism, consistent with findings from Study 1. When NG assumes Gaussian margins but the true innovations are Exponential, the probability integral transform yields non-uniform PITs, which attenuate the effective dependence seen by the Gaussian copula.
+
+# 1. Introduction
+
+This simulation study extends the analysis from Study 1 by comparing two Bayesian VAR(1) models under exponential innovations: a Normal–Gaussian (NG) model and an Exponential–Gaussian (EG) model. While Study 1 examined skew-normal and chi-squared innovations, this study focuses on exponential margins to assess whether correctly specifying the marginal distribution recovers the models parameters without bias.
+
+## 1.1. Data Generating Process (DGP)
+
+The DGP follows the same structure as Study 1:
+
+$$
+Y_t = \mu + \Phi Y_{t-1} + \varepsilon_t, \qquad t = 2, \ldots, T,
+$$
+
+with $\mu = \mathbf{0}$. Innovations $\varepsilon_t = (\varepsilon_{1t}, \varepsilon_{2t})$ have standardized Exponential margins (mean 0, variance 1), with optional mirroring to induce left-skewness, and are coupled through a Gaussian copula with correlation parameter $\rho$.
+
+::: {.callout-note}
+## Standardization of Exponential Innovations
+
+A standard Exponential(1) random variable $X$ has $\mathbb{E}[X] = 1$ and $\text{Var}(X) = 1$. To standardize:
+
+$$
+Z = X - 1
+$$
+
+yields $\mathbb{E}[Z] = 0$ and $\text{Var}(Z) = 1$. Mirroring ($-Z$) produces left-skewed innovations. For the joint density via Gaussian copula, see Study 1, Section 1.1.
+:::
 
 ::: {.callout-important}
-## Copula sign under mirroring (critical for interpreting $\rho$ in mixed-direction cells)
+## Copula Sign Under Mirroring
 
-Left-skew Exponential margins are produced by **mirroring** standardized Exponential innovations (multiplying by $-1$). For a Gaussian copula, mirroring exactly one margin corresponds to the transformation $u \mapsto 1-u$ on the PIT scale. Since $\Phi^{-1}(1-u) = -\Phi^{-1}(u)$, this flips the sign of the latent Gaussian score and therefore maps
+Left-skew Exponential margins are produced by mirroring standardized Exponential innovations (multiplying by $-1$). For a Gaussian copula, mirroring exactly one margin corresponds to the transformation $u \mapsto 1-u$ on the PIT scale. Since $\Phi^{-1}(1-u) = -\Phi^{-1}(u)$, this flips the sign of the latent Gaussian score and therefore maps
 
 $$
 \rho \;\mapsto\; -\rho.
 $$
 
-Accordingly, in mixed-direction settings (e.g., $+-$), the **effective** copula correlation associated with the observed marginals is
+Accordingly, in mixed-direction settings (e.g., $+-$), the effective copula correlation associated with the observed marginals is
 
 $$
 \rho_{\mathrm{eff}} \;=\; s_1 s_2\,\rho,\qquad s_j\in\{+1,-1\},
 $$
 
 where $s_j=-1$ indicates a mirrored (left-skew) margin.
-
-**Implementation in this report.** All bias and coverage summaries for the copula parameter use $\rho_{\mathrm{eff}}$ as the target in mixed-direction cells. In the key simulation plots, the *input* $\rho\in\{0.30,0.50\}$ is encoded by **line type** (rather than an additional facet dimension) to keep panels readable.
-
-**Nuance.** This is a parameterization issue, not a sampling pathology: if one compares estimates of $\rho$ to the unadjusted input value in mixed-direction cells, the plots will show an apparent “sign reversal” and near-zero coverage even when the model is correctly specified for the mirrored margins.
 :::
 
-::: {.callout-note}
-## Relative bias for $\mu$
+## 1.2. Simulation Design
 
-Because $\mu=0$ in the DGP, “relative bias” is reported as **absolute bias** for $\mu$ (i.e., $\widehat{\mu}-0$), using the convention $\text{rel\_bias}=\text{bias}$ when $|\text{truth}|$ is near 0.
-:::
-
-# 1. Introduction
-
-## 1.1 Data generating process
-
-We consider the bivariate VAR(1)
-
-$$
-Y_t = \mu + \Phi Y_{t-1} + \varepsilon_t,\qquad t=2,\ldots,T,
-$$
-
-with $\mu=\mathbf{0}$. Innovations $\varepsilon_t=(\varepsilon_{1t},\varepsilon_{2t})$ have **standardized Exponential** margins (mean 0, sd 1), with optional mirroring to induce left-skewness, and are coupled through a Gaussian copula with correlation parameter $\rho$.
-
-## 1.2 Simulation design
-
-A factorial design crosses $T\in\{50,100,200\}$, $\rho\in\{0.30,0.50\}$, directions $\{++, +-, --\}$, and two VAR matrices $\Phi\in\{A,B\}$.
+The study employs a factorial design crossing four factors.
 
 ```{r design_table}
 #| label: design_table
 #| echo: false
 
-# NOTE: Double backslashes (\\) are required here because this is inside an R string
-# that will be interpreted as LaTeX by kable(escape=FALSE).
 design_summary <- tibble(
   Factor = c(
     "DGP Level",
@@ -145,16 +150,61 @@ design_summary <- tibble(
   )
 )
 
-kable(design_summary, caption = "Simulation design factors (Study 2).", escape = FALSE)
+kable(design_summary, caption = "Summary of the Simulation Design Factors.", escape = FALSE)
 ```
 
 ::: {.callout-caution}
-## Mixed-direction symmetry
+## Mixed-Direction Symmetry
 
-Only one mixed-direction case ($+-$) is included. For the asymmetric VAR set $B$, $+-$ and $-+$ are not equivalent under variable relabeling. If mixed-direction symmetry is a design requirement, include both $+-$ and $-+$.
+Only one mixed-direction case ($+-$) is included. For the asymmetric VAR set $B$, $+-$ and $-+$ are not equivalent under variable relabeling. See Study 1, Section 1.2 for discussion of this design choice.
 :::
 
-## 1.3 Marginal shape illustration (standardized Exponential)
+## 1.3. True Parameter Values
+
+```{r true_params_table}
+#| label: true_params_table
+#| echo: false
+
+true_params <- tibble(
+  Parameter = c(
+    "$\\mu_1, \\mu_2$",
+    "$\\phi_{11}$ (Set A / Set B)",
+    "$\\phi_{12} = \\phi_{21}$",
+    "$\\phi_{22}$ (Set A / Set B)",
+    "$\\rho$",
+    "$\\sigma_1, \\sigma_2$ (NG model)",
+    "$\\sigma_{\\mathrm{exp},1}, \\sigma_{\\mathrm{exp},2}$ (EG model)"
+  ),
+  `True Value` = c(
+    "0, 0",
+    "0.40 / 0.55",
+    "0.10",
+    "0.40 / 0.25",
+    "0.30 or 0.50",
+    "1.0, 1.0",
+    "1.0, 1.0"
+  ),
+  Notes = c(
+    "Innovations are mean-zero",
+    "Diagonal AR coefficients",
+    "Cross-effects (symmetric)",
+    "Diagonal AR coefficients",
+    "Copula correlation",
+    "Innovations are unit-variance",
+    "Scale parameter for standardized Exponential"
+  )
+)
+
+kable(true_params, caption = "True Parameter Values Used in the Data Generating Process.", escape = FALSE)
+```
+
+::: {.callout-note}
+## Bias Metric for Intercepts ($\mu$)
+
+Because $\mu = 0$ in the DGP, "relative bias" is undefined. We report absolute bias for $\mu$ (i.e., $\widehat{\mu} - 0$), using the convention $\text{rel\_bias} = \text{bias}$ when $|\text{truth}|$ is near 0.
+:::
+
+## 1.4 Visual Check: Standardized Marginal Innovations (DGP)
 
 ```{r dgp_marginal_distributions, fig.width=10, fig.height=6}
 #| label: dgp_marginal_distributions
@@ -189,10 +239,11 @@ ggplot(plot_df, aes(x = value, fill = dist)) +
   guides(fill = "none")
 ```
 
-# 2. Data loading & preparation
+# 2. Data Loading and Preparation
 
 ```{r}
 #| label: data_prep
+#| echo: false
 
 # ---- design grid ----
 design_raw <- readRDS(files$design)
@@ -273,6 +324,7 @@ rep_df <- prep_data(rep_raw)
 dir_chr <- as.character(rep_df$direction)
 s1 <- ifelse(substr(dir_chr, 1, 1) %in% c("-", "−"), -1, 1)
 s2 <- ifelse(substr(dir_chr, 2, 2) %in% c("-", "−"), -1, 1)
+
 rep_df <- rep_df |>
   mutate(
     rho_truth = rho_val * (s1 * s2)
@@ -289,16 +341,17 @@ rep_df <- rep_df |>
   )
 ```
 
-## 2.1 MCMC classification and overview
+## 2.1. MCMC Classification and Overview
 
-We classify each fitted replication as:
+We classify runs based on MCMC diagnostics ($\hat{R}$ and divergent transitions) using the same criteria as Study 1:
 
-- **Clean:** $\widehat{R}\le 1.01$ and no post-warmup divergences.
-- **Problematic:** $\widehat{R}>1.01$ or at least one divergence.
-- **Failed/Error:** non-OK status or missing diagnostics.
+- **Clean:** $\hat{R} \leq 1.01$ and no post-warmup divergences.
+- **Problematic:** $\hat{R} > 1.01$ or at least one divergence.
+- **Failed/Error:** Non-OK status or missing diagnostics.
 
-```{r}
+```{r mcmc_classification}
 #| label: mcmc_classification
+#| echo: false
 
 RHAT_THRESHOLD <- 1.01
 
@@ -319,7 +372,7 @@ mcmc_summary <- rep_df |>
   summarise(Count = n(), .groups = "drop")
 ```
 
-```{r mcmc_status_plot, fig.height=12, fig.width=16}
+```{r mcmc_status_plot, fig.height=5, fig.width=10}
 #| label: mcmc_status_plot
 #| echo: false
 
@@ -333,41 +386,54 @@ ggplot(mcmc_summary, aes(x = T, y = Count, fill = mcmc_status)) +
     title = "MCMC convergence status by model (Study 2)"
   ) +
   theme_bw(base_size = 14) +
-  scale_fill_manual(
-    values = c("Clean" = "#4daf4a", "Problematic" = "#ff7f00", "Failed/Error" = "#e41a1c")
-  )
+  scale_fill_manual(values = c("Clean" = "#4daf4a", "Problematic" = "#ff7f00", "Failed/Error" = "#e41a1c"))
 ```
 
-```{r divergence_overview, fig.height=9, fig.width=16}
-#| label: divergence_overview
+**Interpretation:** Both NG and EG fits are uniformly Clean across the entire design, with zero post-warmup divergent transitions. This excellent computational behavior contrasts with the SG model under extremeCHI in Study 1, which exhibited frequent divergences. The absence of sampling difficulties here demonstrates that correctly specifying the marginal distribution (EG with Exponential margins) avoids the posterior geometry challenges that arose from model misspecification.
+
+```{r mcmc_divergences_plot, fig.height=5, fig.width=10}
+#| label: mcmc_divergences_plot
 #| echo: false
 
-# Use one row per replication run (diagnostics are duplicated across params)
 div_dist_data <- rep_df |>
   filter(param == "rho") |>
   distinct(condition_id, rep_id, Model, T, skew_level, n_div_clean, mcmc_status) |>
   filter(mcmc_status != "Failed/Error")
 
-ggplot(div_dist_data, aes(x = T, y = n_div_clean, fill = Model)) +
-  geom_boxplot(outlier.shape = NA, alpha = 0.6, position = position_dodge(width = 0.8)) +
-  geom_point(
-    size = 1.5, alpha = 0.4,
-    position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)
-  ) +
-  facet_grid(Model ~ skew_level) +
-  theme_bw(base_size = 14) +
-  labs(
-    title = "Distribution of post-warmup divergent transitions",
-    y = "Count of divergences (n_div)",
-    x = "Time series length (T)"
-  )
+# Only show boxplot if there's variation in divergences; otherwise show summary table
+if (max(div_dist_data$n_div_clean, na.rm = TRUE) > 0) {
+  ggplot(div_dist_data, aes(x = T, y = n_div_clean, fill = Model)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.6, position = position_dodge(width = 0.8)) +
+    geom_point(size = 1.5, alpha = 0.4, position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)) +
+    facet_grid(Model ~ skew_level) +
+    theme_bw(base_size = 14) +
+    labs(
+      title = "Distribution of post-warmup divergent transitions",
+      y = "Count of divergences (n_div)",
+      x = "Time series length (T)"
+    )
+} else {
+  # All divergences are zero - show summary table
+  div_summary <- div_dist_data |>
+    group_by(Model, T) |>
+    summarise(
+      n_runs = n(),
+      total_div = sum(n_div_clean),
+      .groups = "drop"
+    )
+  kable(div_summary, 
+        caption = "Divergence summary: All runs have zero post-warmup divergent transitions.",
+        col.names = c("Model", "T", "N Runs", "Total Divergences"))
+}
 ```
 
-# 3. Helper plotting utilities
+# 3. Helpers
 
-```{r analysis_helpers}
-#| label: analysis_helpers
+```{r helpers}
+#| label: helpers
+#| echo: false
 
+# standardized visualization settings
 theme_standard <- theme_bw(base_size = 14) +
   theme(legend.position = "bottom")
 
@@ -387,19 +453,19 @@ theme_facet <- theme_bw(base_size = 11) +
 # Compact labellers to avoid unreadable facet strips
 lab_short <- labeller(
   direction = function(x) x,
-  VARset    = function(x) paste0("VAR ", x),
-  rho       = function(x) paste0("rho=", x),
-  param     = function(x) x
+  VARset = function(x) paste0("VAR ", x),
+  rho = function(x) paste0("rho=", x),
+  param = function(x) x
 )
 
 # Readable metric plot: facet by (direction x VARset), encode input rho by linetype
 plot_metric_readable <- function(data,
-                                 metric_col,
-                                 ylab,
-                                 title,
-                                 params = NULL,
-                                 use_free_y = FALSE,
-                                 ylims = NULL) {
+                                  metric_col,
+                                  ylab,
+                                  title,
+                                  params = NULL,
+                                  use_free_y = FALSE,
+                                  ylims = NULL) {
   df <- data |>
     filter(!is.na(.data[[metric_col]]))
 
@@ -500,12 +566,11 @@ summarise_conditions <- function(df) {
 }
 ```
 
-# 4. Analysis: Exponential DGP (NG vs EG)
+# 4. Exponential DGP: NG vs EG Performance
 
-All summaries below are computed from replication-level results, excluding runs with `Failed/Error` status.
-
-```{r}
+```{r condition_summaries}
 #| label: condition_summaries
+#| echo: false
 
 core_params <- c("mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22", "rho")
 
@@ -514,9 +579,7 @@ cond_core <- rep_df |>
   summarise_conditions()
 ```
 
-## 4.1 Relative bias
-
-To improve readability, we (i) facet by **direction x VAR set** and (ii) encode the input copula parameter value ($\rho\in\{0.30,0.50\}$) using **line type** rather than adding another facet dimension.
+## 4.1. Relative Bias
 
 ```{r exp_bias_rho, fig.height=4.5, fig.width=12}
 #| label: exp_bias_rho
@@ -528,7 +591,7 @@ plot_metric_readable(
   ylab = "Mean relative bias",
   title = "Relative bias: dependence parameter rho",
   params = "rho",
-  use_free_y = FALSE
+  ylims = c(-0.3, 0.3)
 )
 ```
 
@@ -552,7 +615,7 @@ plot_metric_readable(
 
 plot_metric_readable(
   cond_core,
-  metric_col = "mean_rel_bias",
+  metric_col = "mean_bias",
   ylab = "Mean bias (truth = 0)",
   title = "Bias: intercepts (mu)",
   params = c("mu[1]", "mu[2]"),
@@ -562,7 +625,7 @@ plot_metric_readable(
 
 **Interpretation.** Across $T$, EG is approximately unbiased for $\Phi$ and $\mu$. For $\rho$, the target in mixed-direction cells is $\rho_{\mathrm{eff}}$ (callout above): EG is close to unbiased, while NG exhibits attenuation in $|\rho|$, most pronounced at small $T$.
 
-## 4.2 95% coverage
+## 4.2. 95% Coverage
 
 ```{r exp_coverage_rho, fig.height=4.5, fig.width=12}
 #| label: exp_coverage_rho
@@ -608,7 +671,7 @@ plot_metric_readable(
 
 **Interpretation.** EG coverage is typically close to nominal for the core parameters. NG coverage shortfalls are concentrated in $\rho$, consistent with attenuation bias under marginal misspecification.
 
-## 4.3 SD-bias
+## 4.3. SD-Bias
 
 ```{r exp_sdbias_rho, fig.height=4.5, fig.width=12}
 #| label: exp_sdbias_rho
@@ -654,7 +717,7 @@ plot_metric_readable(
 
 **Interpretation.** EG is generally well calibrated (SD-bias near 0). NG frequently shows negative SD-bias for $\rho$, indicating overconfident posterior uncertainty for dependence under misspecified margins.
 
-# 5. Marginal scale parameters
+# 5. Marginal Parameters
 
 We report mean bias for the Exponential scale parameters in EG ($\sigma_{\mathrm{exp}}$) and the innovation standard deviations in NG ($\sigma$). Under the standardized DGP, the reference value is 1.
 
@@ -706,93 +769,4 @@ if (nrow(sigma_ng_data) > 0) {
 }
 ```
 
-# 6. EG-only diagnostics: role of MCMC pathologies
-
-## 6.1 Coverage split: Clean vs Problematic
-
-The full factorial design implies many small facets if we stratify coverage simultaneously by parameter, direction, VAR set, and the input copula correlation. For readability, the figure below *pools across direction and VAR set* and shows coverage trajectories by **MCMC status** (Clean vs Problematic), with the input $\\rho$ encoded by line type.
-
-```{r coverage_status_split, fig.height=7.5, fig.width=12}
-#| label: coverage_status_split
-#| echo: false
-
-cond_status <- rep_df |>
-  filter(
-    param %in% core_params,
-    Model == "Exponential–Gaussian (EG)",
-    mcmc_status %in% c("Clean", "Problematic")
-  ) |>
-  group_by(T, param, mcmc_status, rho) |>
-  summarise(
-    coverage_95 = mean(cover95_eff, na.rm = TRUE),
-    N = n(),
-    .groups = "drop"
-  )
-
-if (nrow(cond_status) > 0 && length(unique(cond_status$mcmc_status)) > 1) {
-  ggplot(
-    cond_status,
-    aes(
-      x = T,
-      y = coverage_95,
-      color = mcmc_status,
-      linetype = rho,
-      group = interaction(mcmc_status, rho)
-    )
-  ) +
-    geom_line(linewidth = 1) +
-    geom_point(size = 2.2) +
-    geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey50") +
-    facet_wrap(~ param, ncol = 3, scales = "fixed") +
-    theme_standard +
-    labs(
-      title = "EG 95% coverage by MCMC status (pooled over direction and VAR set)",
-      y = "Empirical coverage",
-      x = "Time series length (T)",
-      color = "MCMC status",
-      linetype = "Input rho"
-    ) +
-    coord_cartesian(ylim = c(0.5, 1.0))
-} else {
-  message("Insufficient EG status diversity for a split-by-status coverage plot.")
-}
-```
-
-## 6.2 Absolute bias vs divergences
-
-```{r bias_vs_divergences, fig.height=12, fig.width=16}
-#| label: bias_vs_divergences
-#| echo: false
-
-div_bias_data <- rep_df |>
-  filter(Model == "Exponential–Gaussian (EG)", param %in% core_params, mcmc_status != "Failed/Error") |>
-  mutate(abs_bias = abs(bias_eff)) |>
-  distinct(condition_id, rep_id, T, direction, VARset, rho, param, n_div_clean, abs_bias)
-
-if (nrow(div_bias_data) > 0) {
-  ggplot(div_bias_data, aes(x = n_div_clean, y = abs_bias)) +
-    geom_point(alpha = 0.3, position = position_jitter(width = 0.2), size = 1.7) +
-    geom_smooth(method = "gam", linewidth = 1.0) +
-    facet_grid(param ~ T, scales = "free_y") +
-    theme_standard +
-    labs(
-      title = "EG: absolute bias vs divergence count",
-      x = "Number of divergences (post-warmup)",
-      y = "Absolute bias |estimate − truth|"
-    )
-}
-```
-
-# 7. Export tables
-
-```{r export_tables}
-#| label: export_tables
-#| echo: false
-
-write_csv(cond_core, file.path(EXPORT_DIR, "study2_core_condition_summary.csv"))
-write_csv(cond_all,  file.path(EXPORT_DIR, "study2_all_condition_summary.csv"))
-```
-
-# 8. One-paragraph abstract
-
-Under a bivariate VAR(1) with standardized Exponential innovations and Gaussian-copula dependence, we compare a Normal–Gaussian copula VAR (NG) with an Exponential–Gaussian copula VAR (EG). EG is well calibrated for $\mu$ and $\Phi$ and, when evaluated against the effective copula correlation $\rho_{\mathrm{eff}}$ implied by marginal mirroring in mixed-direction designs, also recovers dependence with near-nominal interval coverage. NG is computationally stable but exhibits attenuation and under-coverage for $\rho$, consistent with misspecified probability integral transforms. EG displays more divergent transitions at small sample sizes; nevertheless, within this design and tuning, coverage is typically similar across “Clean” and “Problematic” EG fits and absolute bias is only weakly related to divergence counts.
+**Interpretation.** The $\sigma$ estimates under NG show small but systematic deviations from the true value of 1. As discussed in Study 1 (Section 7.1), these deviations arise from marginal misspecification but are not the mechanism driving $\rho$ attenuation—both phenomena stem from the same root cause (marginal misspecification) but through different pathways.
