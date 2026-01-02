@@ -53,12 +53,12 @@ RUN_VISUALIZATION <- FALSE
 
 REPS_PER_CELL <- 200
 NUM_CORES_OUT <- max(1, parallel::detectCores() - 1)
-set.seed(3033) # dedicated seed for Study 3
+set.seed(3033) 
 
 ## =======================================================================
 ## 1 · Design grid (Study III)
 ## =======================================================================
-# Only VAR set A (as requested)
+# Only VAR set A
 var_sets <- list(
   A = matrix(c(
     0.40, 0.10,
@@ -137,10 +137,10 @@ if (RUN_FITTING) {
       stan_dir = STAN_DIR,
       results_dir = RESULT_DIR,
       chains = 4,
-      iter = 3000,
-      warmup = 1500,
-      adapt_delta = 0.98,
-      max_treedepth = 13,
+      iter = 4000,
+      warmup = 2000,
+      adapt_delta = 0.90,
+      max_treedepth = 10,
       cores_outer = NUM_CORES_OUT,
       start_condition = START_COND,
       start_rep = START_REP

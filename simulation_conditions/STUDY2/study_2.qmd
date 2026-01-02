@@ -770,3 +770,281 @@ if (nrow(sigma_ng_data) > 0) {
 ```
 
 **Interpretation.** The $\sigma$ estimates under NG show small but systematic deviations from the true value of 1. As discussed in Study 1 (Section 7.1), these deviations arise from marginal misspecification but are not the mechanism driving $\rho$ attenuation—both phenomena stem from the same root cause (marginal misspecification) but through different pathways.
+
+# 6. Details
+
+This section provides technical details on the implementation of the simulation study, including prior specifications, MCMC settings, and mathematical derivations specific to the Exponential–Gaussian (EG) model.
+
+## 6.1. Prior Specifications
+
+Both models use weakly informative priors. The EG model employs a novel reparameterization for the scale parameter to handle the support constraint of exponential marginals.
+
+**Table: Prior Specifications for the Normal–Gaussian (NG) Model**
+
+| Parameter | Prior | Support | Rationale |
+|-----------|-------|---------|-----------|
+| $\mu_1, \mu_2$ | $\text{Normal}(0, 1)$ | $\mathbb{R}$ | Weakly informative; centered at true value (0) |
+| $\phi_{11}, \phi_{12}, \phi_{21}, \phi_{22}$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward stationarity; truncated by bounds |
+| $\sigma_1, \sigma_2$ | $\text{Half-Normal}(0, 1)$ | $(0, \infty)$ | Weakly informative scale prior |
+| $\rho$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward independence; truncated by bounds |
+
+**Table: Prior Specifications for the Exponential–Gaussian (EG) Model**
+
+| Parameter | Prior | Support | Rationale |
+|-----------|-------|---------|-----------|
+| $\mu_1, \mu_2$ | $\text{Normal}(0, 1)$ | $\mathbb{R}$ | Weakly informative; centered at true value (0) |
+| $\phi_{11}, \phi_{12}, \phi_{21}, \phi_{22}$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward stationarity; truncated by bounds |
+| $\sigma_{\mathrm{exp},1}, \sigma_{\mathrm{exp},2}$ | $\text{Log-Normal}(0, 0.5)$ | $(b_i, \infty)$ | Induced prior via reparameterization (see Section 6.4) |
+| $\rho$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward independence; truncated by bounds |
+
+::: {.callout-note}
+## EG Scale Parameter Prior
+
+The EG model does **not** place a direct prior on $\sigma_{\mathrm{exp}}$. Instead, it estimates an unconstrained parameter $\eta \in \mathbb{R}$ and applies a change-of-variables transformation:
+
+$$
+\sigma_{\mathrm{exp}} = b + \exp(\eta)
+$$
+
+where $b$ is a data-dependent feasibility bound (Section 6.4). The induced prior on $\sigma_{\mathrm{exp}}$ is $\text{Log-Normal}(0, 0.5)$ with support shifted to $(b, \infty)$.
+:::
+
+## 6.2. MCMC Settings
+
+All models were fitted using the No-U-Turn Sampler (NUTS) implemented in Stan via the `rstan` package.
+
+**Table: MCMC Sampling Configuration**
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| Chains | 4 | Number of independent Markov chains |
+| Total iterations | 4,000 | Iterations per chain (including warmup) |
+| Warmup iterations | 2,000 | Discarded adaptation period |
+| Post-warmup draws | 2,000 | Retained samples per chain |
+| `adapt_delta` | 0.995 | Target acceptance probability |
+| `max_treedepth` | 15 | Maximum tree depth for NUTS |
+| Parallelization | Outer loop | Replications parallelized; chains run sequentially |
+
+::: {.callout-note}
+## Higher adapt_delta Than Study 1
+
+Study 2 uses `adapt_delta = 0.995` compared to 0.95 in Study 1. This higher value was chosen because the EG model's feasibility-bound reparameterization creates regions where the posterior density changes rapidly near the boundary. The elevated target acceptance rate reduces step sizes in these regions, preventing divergent transitions.
+
+Despite this challenging geometry, **zero divergent transitions** were observed across all 14,400 fits (7,200 per model), demonstrating that the reparameterization strategy (Section 6.4) successfully regularizes the posterior.
+:::
+
+## 6.3. Gaussian Copula Log-Density
+
+The Gaussian copula density implementation is identical to Study 1. For uniform marginals $(u, v) \in (0,1)^2$ with correlation parameter $\rho \in (-1, 1)$:
+
+Let $z_1 = \Phi^{-1}(u)$ and $z_2 = \Phi^{-1}(v)$ denote the standard normal quantile transforms. The copula log-density is:
+
+$$
+\log c(u, v; \rho) = -\frac{1}{2}\log(1 - \rho^2) - \frac{1}{2(1-\rho^2)}\left(z_1^2 - 2\rho z_1 z_2 + z_2^2\right) + \frac{1}{2}\left(z_1^2 + z_2^2\right)
+$$
+
+::: {.callout-note}
+## Boundary Clamping
+
+As in Study 1, the implementation applies boundary clamping with $\varepsilon = 10^{-9}$:
+
+$$
+u_{\text{clamped}} = \max(\varepsilon, \min(1 - \varepsilon, u))
+$$
+
+This prevents numerical overflow when $\Phi^{-1}(u)$ is evaluated near 0 or 1.
+:::
+
+## 6.4. EG Model: Feasibility-Bound Reparameterization
+
+The Exponential–Gaussian model requires that the shifted residuals have positive support. This section documents the reparameterization strategy that ensures feasibility while maintaining good posterior geometry.
+
+### The Support Constraint Problem
+
+For an Exponential marginal with scale $\sigma_{\mathrm{exp}}$, the likelihood requires:
+
+$$
+x_{\text{shifted},t} = \sigma_{\mathrm{exp}} + s \cdot \text{res}_t > 0, \quad \forall\, t
+$$
+
+where $s \in \{+1, -1\}$ is the skew direction (+1 for right-skewed, −1 for left-skewed/mirrored). Naively parameterizing $\sigma_{\mathrm{exp}} > 0$ can lead to divergent transitions when the sampler proposes values that violate this constraint for some $t$.
+
+### Data-Dependent Feasibility Bound
+
+Define the feasibility bound:
+
+$$
+b_i = \max_t \left( -s_i \cdot \text{res}_{t,i} \right)
+$$
+
+This is the minimum value of $\sigma_{\mathrm{exp},i}$ such that $x_{\text{shifted},t,i} > 0$ for all observations. Any $\sigma_{\mathrm{exp},i} > b_i$ is guaranteed to satisfy the support constraint.
+
+### The $\eta$ Reparameterization
+
+Rather than estimating $\sigma_{\mathrm{exp}}$ directly, the EG model estimates an unconstrained parameter $\eta \in \mathbb{R}$ and transforms:
+
+$$
+\sigma_{\mathrm{exp}} = b + \exp(\eta)
+$$
+
+where $\exp(\eta) > 0$ represents the "slack" above the feasibility bound.
+
+**Key benefits:**
+
+1. **Automatic feasibility**: $\sigma_{\mathrm{exp}} > b$ by construction for any $\eta \in \mathbb{R}$
+2. **Smooth geometry**: No hard boundaries for the sampler to navigate
+3. **Well-defined gradients**: The transformation is smooth and invertible
+
+### Induced Prior via Change-of-Variables
+
+To place a $\text{Log-Normal}(0, 0.5)$ prior on $\sigma_{\mathrm{exp}}$, we apply the change-of-variables formula. The Jacobian of the transformation $\sigma_{\mathrm{exp}} = b + \exp(\eta)$ is:
+
+$$
+\frac{d\sigma_{\mathrm{exp}}}{d\eta} = \exp(\eta)
+$$
+
+The log-posterior contribution is:
+
+$$
+\log p(\sigma_{\mathrm{exp}}) + \log\left|\frac{d\sigma_{\mathrm{exp}}}{d\eta}\right| = \text{lognormal\_lpdf}(\sigma_{\mathrm{exp}} \mid 0, 0.5) + \eta
+$$
+
+::: {.callout-important}
+## No Additional Prior on $\eta$
+
+The Stan implementation explicitly avoids placing an independent prior on $\eta$. Doing so would double-regularize the scale parameter and conflict with the intended $\text{Log-Normal}(0, 0.5)$ prior on $\sigma_{\mathrm{exp}}$, potentially worsening posterior geometry and introducing bias.
+:::
+
+### Stan Implementation
+
+```stan
+model {
+  // Compute feasibility bounds: b_i = max_t(-s_i * res_{t,i})
+  for (i in 1:2) {
+    real m = -skew_direction[i] * residuals[1, i];
+    for (t in 2:(T-1)) {
+      m = fmax(m, -skew_direction[i] * residuals[t, i]);
+    }
+    b[i] = m;
+  }
+
+  // Reparameterized sigma: always feasible
+  for (i in 1:2) {
+    sigma_exp[i] = b[i] + exp(eta[i]);
+  }
+  rate_exp = 1.0 ./ sigma_exp;
+
+  // Induced prior on sigma_exp via change-of-variables
+  for (i in 1:2) {
+    target += lognormal_lpdf(sigma_exp[i] | 0, 0.5) + eta[i];
+  }
+  
+  // Likelihood contributions...
+}
+```
+
+## 6.5. CDF Mirroring for Left-Skewed Exponential Margins
+
+For left-skewed (mirrored) Exponential margins, the model must correctly transform the CDF to preserve the copula correlation structure.
+
+### The Mirroring Problem
+
+Let $X \sim \text{Exponential}(\lambda)$ with CDF $F_X(x) = 1 - e^{-\lambda x}$. For a mirrored variable $Y = -X$:
+
+$$
+F_Y(y) = P(Y \leq y) = P(-X \leq y) = P(X \geq -y) = 1 - F_X(-y)
+$$
+
+On the uniform (PIT) scale, if $U = F_X(X)$, then the PIT of $Y = -X$ is $V = 1 - U$.
+
+### Copula Correlation Sign Flip
+
+For a Gaussian copula, the latent normal scores are $Z = \Phi^{-1}(U)$. Under the $U \mapsto 1-U$ transformation:
+
+$$
+\Phi^{-1}(1 - U) = -\Phi^{-1}(U) = -Z
+$$
+
+This negates the latent score, flipping the sign of the copula correlation. If the DGP has $\rho > 0$ and exactly one margin is mirrored, the effective correlation on the observed scale is $\rho_{\mathrm{eff}} = -\rho$.
+
+### Stan Implementation
+
+The EG model applies the CDF flip after computing the exponential CDF:
+
+```stan
+for (i in 1:2) {
+  // Shift residual to positive support
+  x_shifted[i] = sigma_exp[i] + skew_direction[i] * res[i];
+  target += exponential_lpdf(x_shifted[i] | rate_exp[i]);
+  
+  // Compute PIT
+  u_vec[i] = exponential_cdf(x_shifted[i], rate_exp[i]);
+  
+  // Flip CDF for left-skewed (mirrored) margins
+  if (skew_direction[i] < 0) u_vec[i] = 1.0 - u_vec[i];
+}
+
+target += gaussian_copula_ld(u_vec[1], u_vec[2], rho);
+```
+
+::: {.callout-note}
+## Effective Correlation in Evaluation
+
+The analysis script computes $\rho_{\mathrm{eff}} = s_1 s_2 \rho$ where $s_j = -1$ if margin $j$ is mirrored. Bias and coverage metrics for $\rho$ are evaluated against $\rho_{\mathrm{eff}}$, not the input $\rho$, ensuring correct interpretation in mixed-direction cells.
+:::
+
+## 6.6. Reproducibility Strategy
+
+The simulation study employs deterministic seeding to ensure full reproducibility.
+
+### Data Generation Seeds
+
+Each simulated dataset receives a unique seed:
+
+$$
+\text{seed}_{\text{data}} = \text{seed\_base} + \text{condition\_id} \times 100000 + \text{rep\_id}
+$$
+
+with $\text{seed\_base} = 2026$ for Study 2. The larger multiplier (100,000 vs 10,000 in Study 1) provides wider separation between condition seed ranges.
+
+### MCMC Initialization Seeds
+
+The EG model uses data-driven initialization based on OLS pre-fits:
+
+1. Fit OLS: $y_{1,t} \sim y_{1,t-1} + y_{2,t-1}$ and $y_{2,t} \sim y_{1,t-1} + y_{2,t-1}$
+2. Extract coefficients as initial values for $\mu$ and $\Phi$
+3. Compute feasibility bounds $b$ from OLS residuals
+4. Set $\eta = \log(0.2)$ (slack ≈ 0.2) as default
+
+For NG, standard random initialization is used with seed:
+
+$$
+\text{seed}_{\text{init}} = \text{seed\_base}_R + \text{seed\_key}(\text{cid}, \text{rid}, \text{chain})
+$$
+
+where $\text{seed\_key}(\text{cid}, \text{rid}, \text{chain}) = \text{cid} \times 100000 + \text{rid} \times 10 + \text{chain}$.
+
+### Stan Sampler Seeds
+
+$$
+\text{seed}_{\text{Stan}} = \text{seed\_base}_{\text{Stan}} + \text{seed\_key}(\text{cid}, \text{rid}, 0)
+$$
+
+with $\text{seed\_base}_{\text{Stan}} = 5 \times 10^6$.
+
+::: {.callout-note}
+## Resume Capability
+
+The pipeline supports resumption via environment variables `START_COND` and `START_REP`. Because seeds are deterministic functions of (condition, replication), resuming from any point produces identical results to running the full pipeline.
+:::
+
+### Initialization Sidecar Files
+
+For each fitted model, the pipeline optionally saves a "sidecar" file containing:
+
+- All random seeds used (data, init, Stan)
+- Exact initial values for each chain
+- Timestamp and metadata
+
+This enables exact reproduction of any individual fit.
+
