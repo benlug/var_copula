@@ -6,22 +6,29 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(purrr)
   library(tidyr)
+  if (!requireNamespace("this.path", quietly = TRUE)) {
+    if (interactive()) {
+      install.packages("this.path")
+    }
+  }
+  if (!requireNamespace("this.path", quietly = TRUE)) {
+    stop("Package 'this.path' is required to locate the Study 1 directory. Please install it.")
+  }
+  library(this.path)
 })
 
 ## -- folders -------------------------------------------------------------
-BASE_DIR <- tryCatch(
+tryCatch(
   {
-    if (requireNamespace("this.path", quietly = TRUE)) {
-      this.path::this.dir()
-    } else {
-      getwd()
-    }
+    BASE_DIR <- this.path::this.dir()
+    setwd(BASE_DIR)
   },
   error = function(e) {
-    getwd()
+    message("Could not set directory using this.path::this.dir(). Using getwd().")
+    BASE_DIR <- getwd()
+    setwd(BASE_DIR)
   }
 )
-setwd(BASE_DIR)
 message("Working directory: ", BASE_DIR)
 
 DATA_DIR <- file.path(BASE_DIR, "data")
@@ -63,7 +70,7 @@ RUN_VISUALIZATION <- TRUE
 
 REPS_PER_CELL <- 200
 BURNIN <- 100
-NUM_CORES_OUT <- max(1, parallel::detectCores() - 1)
+NUM_CORES_OUT <- max(1, parallel::detectCores() - 10)
 set.seed(2025)
 
 ## =======================================================================

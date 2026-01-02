@@ -11,21 +11,33 @@ suppressPackageStartupMessages({
 })
 
 # ── folders --------------------------------------------------------------
-# Robust directory detection (assuming this script is run from the project root)
-BASE_DIR <- getwd()
+# Prefer the script location so source() works from any working directory.
+get_base_dir <- function() {
+  if (requireNamespace("this.path", quietly = TRUE)) {
+    return(this.path::this.dir())
+  }
+  ofile <- NULL
+  try(ofile <- sys.frame(1)$ofile, silent = TRUE)
+  if (!is.null(ofile)) {
+    return(normalizePath(dirname(ofile)))
+  }
+  getwd()
+}
 
-# Check if Study 2 directories exist (created by the updated run_pipeline.R), otherwise fall back to Study 1
-if (dir.exists(file.path(BASE_DIR, "data"))) {
-  message("Analyzing Study 2 results.")
-  DATA_DIR <- file.path(BASE_DIR, "data")
-  FITS_DIR <- file.path(BASE_DIR, "fits")
-  RES_DIR <- file.path(BASE_DIR, "results")
-} else {
-  message("Analyzing Study 1 results.")
+BASE_DIR <- get_base_dir()
+DATA_DIR <- file.path(BASE_DIR, "data")
+FITS_DIR <- file.path(BASE_DIR, "fits")
+RES_DIR <- file.path(BASE_DIR, "results")
+
+if (!dir.exists(DATA_DIR)) {
+  message("Data directory not found under ", BASE_DIR, "; falling back to getwd().")
+  BASE_DIR <- getwd()
   DATA_DIR <- file.path(BASE_DIR, "data")
   FITS_DIR <- file.path(BASE_DIR, "fits")
   RES_DIR <- file.path(BASE_DIR, "results")
 }
+
+message("Analyzing results in ", BASE_DIR)
 
 dir.create(RES_DIR, FALSE, TRUE)
 
@@ -212,7 +224,13 @@ for (i in seq_along(fits)) {
   m2_mirror <- sim$true_params$margin2$mirror %||% FALSE
   s1 <- if (isTRUE(m1_mirror)) -1 else 1
   s2 <- if (isTRUE(m2_mirror)) -1 else 1
-  rho_eff <- s1 * s2 * sim$rho
+  rho_eff <- sim$true_params$copula_rho_eff %||% NA_real_
+  if (is.na(rho_eff)) {
+    rho_input <- sim$true_params$copula_rho_input %||%
+      sim$true_params$copula_rho %||%
+      sim$rho
+    rho_eff <- s1 * s2 * rho_input
+  }
 
   # Define the truth vector (CORE parameters)
   truth <- c(
