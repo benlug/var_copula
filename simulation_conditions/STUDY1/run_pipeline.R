@@ -70,7 +70,7 @@ RUN_VISUALIZATION <- TRUE
 
 REPS_PER_CELL <- 200
 BURNIN <- 100
-NUM_CORES_OUT <- max(1, parallel::detectCores() - 10)
+NUM_CORES_OUT <- max(1, parallel::detectCores() - 2)
 set.seed(2025)
 
 ## =======================================================================
