@@ -52,7 +52,7 @@ transformed parameters {
 
 model {
   vector[2] b;           // global feasibility bounds across all (i,t)
-  vector[2] sigma_exp;
+  vector[2] sigma_exp_local;
   vector[2] rate_exp;
 
   // Priors
@@ -68,7 +68,7 @@ model {
 
   // 1) Scan residuals to compute global feasibility bounds b_j
   {
-    // seed b using first available residual
+    // Initialize b using first available residual
     row_vector[2] pred0 = mu[1] + y[1][1] * Phi_T;
     row_vector[2] res0  = y[1][2] - pred0;
     for (j in 1:2) b[j] = -skew_direction[j] * res0[j];
@@ -86,11 +86,11 @@ model {
   }
 
   // 2) Global EG scales: sigma = b + exp(eta)
-  for (j in 1:2) sigma_exp[j] = b[j] + exp(eta[j]);
-  rate_exp = 1.0 ./ sigma_exp;
+  for (j in 1:2) sigma_exp_local[j] = b[j] + exp(eta[j]);
+  rate_exp = 1.0 ./ sigma_exp_local;
 
   // prior on sigma_exp via change of variables: lognormal(0,0.5)
-  for (j in 1:2) target += lognormal_lpdf(sigma_exp[j] | 0, 0.5) + eta[j];
+  for (j in 1:2) target += lognormal_lpdf(sigma_exp_local[j] | 0, 0.5) + eta[j];
 
   // 3) Likelihood over all units and times
   for (i in 1:N) {
@@ -100,7 +100,7 @@ model {
 
       vector[2] x; vector[2] u;
       for (j in 1:2) {
-        x[j] = sigma_exp[j] + skew_direction[j] * res[j];  // >0
+        x[j] = sigma_exp_local[j] + skew_direction[j] * res[j];  // >0
         target += exponential_lpdf(x[j] | rate_exp[j]);
         u[j] = exponential_cdf(x[j], rate_exp[j]);
         if (skew_direction[j] < 0) u[j] = 1.0 - u[j];
@@ -113,32 +113,36 @@ model {
 generated quantities {
   matrix[2,2] Phi = Phi_T';
 
-  vector[2] b_out;
-  vector[2] slack_out;
-  vector[2] sigma_exp_out;
-  vector[2] rate_exp_out;
+  // Recompute and expose sigma_exp for analysis
+  // Using consistent naming: sigma_exp[1], sigma_exp[2]
+  vector[2] sigma_exp;
+  vector[2] b_gq;      // feasibility bound (for diagnostics)
+  vector[2] slack_gq;  // exp(eta) slack term (for diagnostics)
 
   {
-    // recompute b (for clarity in outputs)
-    vector[2] b; b = rep_vector(0,2);
+    vector[2] b_local;
+    
+    // Initialize from first residual
     row_vector[2] pred0 = mu[1] + y[1][1] * Phi_T;
     row_vector[2] res0  = y[1][2] - pred0;
-    for (j in 1:2) b[j] = -skew_direction[j] * res0[j];
+    for (j in 1:2) b_local[j] = -skew_direction[j] * res0[j];
+    
+    // Scan all residuals
     for (i in 1:N) {
       for (t in 2:T) {
         row_vector[2] pred = mu[i] + y[i][t-1] * Phi_T;
         row_vector[2] res  = y[i][t] - pred;
         for (j in 1:2) {
           real v = -skew_direction[j] * res[j];
-          if (v > b[j]) b[j] = v;
+          if (v > b_local[j]) b_local[j] = v;
         }
       }
     }
+    
     for (j in 1:2) {
-      b_out[j]         = b[j];
-      slack_out[j]     = exp(eta[j]);
-      sigma_exp_out[j] = b_out[j] + slack_out[j];
-      rate_exp_out[j]  = 1.0 / sigma_exp_out[j];
+      b_gq[j]      = b_local[j];
+      slack_gq[j]  = exp(eta[j]);
+      sigma_exp[j] = b_gq[j] + slack_gq[j];
     }
   }
 }

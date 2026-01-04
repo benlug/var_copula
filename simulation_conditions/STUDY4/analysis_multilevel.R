@@ -1,4 +1,11 @@
+###########################################################################
 # analysis_multilevel.R — summaries for ML (minimal pooling)
+# 
+# FIXES APPLIED:
+# 1. tau_mu truth assignment now uses explicit index matching (not positional)
+# 2. mu_bar truth assignment now uses explicit index matching
+###########################################################################
+
 suppressPackageStartupMessages({
   library(rstan)
   library(dplyr)
@@ -27,6 +34,7 @@ count_div <- function(fit) {
   }
   sum(vapply(sp, function(x) as.integer(sum(x[, "divergent__"])), integer(1)))
 }
+
 max_rhat <- function(fit) {
   if (!inherits(fit, "stanfit")) {
     return(NA_real_)
@@ -36,6 +44,15 @@ max_rhat <- function(fit) {
     return(NA_real_)
   }
   suppressWarnings(max(s[, "Rhat"], na.rm = TRUE))
+}
+
+# Helper to extract index from parameter names like "param[1]" or "param[2,3]"
+extract_single_index <- function(param_name, pattern) {
+  # pattern should be like "tau_mu" to match "tau_mu[1]", "tau_mu[2]"
+  regex <- paste0("^", pattern, "\\[(\\d+)\\]$")
+  m <- str_match(param_name, regex)
+  if (is.na(m[1, 2])) return(NA_integer_)
+  as.integer(m[1, 2])
 }
 
 # list ML fits
@@ -167,16 +184,24 @@ for (k in seq_along(fits)) {
   # hyperparameters mu_bar and tau_mu (truths known)
   tab_hyp <- tibble()
   if (stat == "ok") {
+    # --- mu_bar: truth = (0, 0) ---
     sm_bar <- pull_sum(fit, c("mu_bar[1]", "mu_bar[2]"))
-    sm_tau <- pull_sum(fit, c("tau_mu[1]", "tau_mu[2]"))
-    if (!is.null(sm_bar)) {
-      sm_bar$truth <- c(0, 0)
+    if (!is.null(sm_bar) && nrow(sm_bar) > 0) {
+      # FIX: Use explicit index matching instead of positional assignment
+      sm_bar <- sm_bar |>
+        mutate(
+          idx = as.integer(str_match(param, "^mu_bar\\[(\\d+)\\]$")[, 2]),
+          truth = 0  # mu_bar truth is always 0 for both indices
+        ) |>
+        filter(!is.na(idx))
+      
       tb <- sm_bar |>
         mutate(
           bias = mean - truth,
           rel_bias = ifelse(abs(truth) < .Machine$double.eps, bias, bias / abs(truth)),
           cover95 = (`2.5%` <= truth & `97.5%` >= truth),
-          model = model, condition_id = cid, rep_id = rid, n_div = n_div, max_rhat = rhat, status = stat
+          model = model, condition_id = cid, rep_id = rid, 
+          n_div = n_div, max_rhat = rhat, status = stat
         ) |>
         select(model, condition_id, rep_id, param,
           post_mean = mean, post_sd = sd, l95 = `2.5%`, u95 = `97.5%`,
@@ -184,14 +209,27 @@ for (k in seq_along(fits)) {
         )
       tab_hyp <- bind_rows(tab_hyp, tb)
     }
-    if (!is.null(sm_tau)) {
-      sm_tau$truth <- tau_true
+    
+    # --- tau_mu: truth = tau_true (condition-specific) ---
+    sm_tau <- pull_sum(fit, c("tau_mu[1]", "tau_mu[2]"))
+    if (!is.null(sm_tau) && nrow(sm_tau) > 0) {
+      # FIX: Use explicit index matching instead of positional assignment
+      sm_tau <- sm_tau |>
+        mutate(
+          idx = as.integer(str_match(param, "^tau_mu\\[(\\d+)\\]$")[, 2])
+        ) |>
+        filter(!is.na(idx)) |>
+        mutate(
+          truth = tau_true[idx]  # Explicit index-based lookup
+        )
+      
       tb <- sm_tau |>
         mutate(
           bias = mean - truth,
           rel_bias = ifelse(abs(truth) < .Machine$double.eps, bias, bias / abs(truth)),
           cover95 = (`2.5%` <= truth & `97.5%` >= truth),
-          model = model, condition_id = cid, rep_id = rid, n_div = n_div, max_rhat = rhat, status = stat
+          model = model, condition_id = cid, rep_id = rid, 
+          n_div = n_div, max_rhat = rhat, status = stat
         ) |>
         select(model, condition_id, rep_id, param,
           post_mean = mean, post_sd = sd, l95 = `2.5%`, u95 = `97.5%`,
@@ -215,6 +253,10 @@ write_csv(rep_tbl, out_rep)
 
 message("Fit status summary (ML):")
 print(table(Status = rep_tbl$status, Model = rep_tbl$model, useNA = "ifany"))
+
+# Check for sigma_exp recovery (diagnostic)
+sigma_exp_count <- sum(rep_tbl$param %in% c("sigma_exp[1]", "sigma_exp[2]"), na.rm = TRUE)
+message(sprintf("sigma_exp parameters recovered: %d rows", sigma_exp_count))
 
 # aggregate to condition level
 good <- rep_tbl$status == "ok" & !is.na(rep_tbl$param)
