@@ -1,5 +1,5 @@
 ---
-title: "Study 4: Multilevel VAR(1) with Exponential Margins — Exponential vs Gaussian Marginal Models (minimal pooling)"
+title: "Study 4: Multilevel VAR(1) with Exponential Margins — Normal-Gaussian vs Exponential-Gaussian Copula Models"
 format:
   pdf:
     toc: true
@@ -10,6 +10,8 @@ execute:
 ---
 
 ```{r setup}
+#| label: setup
+#| echo: false
 suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
@@ -18,21 +20,28 @@ suppressPackageStartupMessages({
   library(stringr)
   library(knitr)
   library(scales)
+  library(RColorBrewer)
+
+  if (!requireNamespace("patchwork", quietly = TRUE)) {
+    message("Package 'patchwork' is recommended for arranging plots.")
+  } else {
+    library(patchwork)
+  }
 })
 
-# Paths (consistent with Studies 1–3)
-# - If you render from within `simulation_conditions/STUDY4/`, these resolve to `./data` and `./results`.
-# - If you render from the project root, these fall back to `simulation_conditions/STUDY4/`.
+# ---- paths ----
 DATA_DIR <- file.path("data")
 RES_DIR <- file.path("results")
+EXPORT_DIR <- file.path(RES_DIR, "exported_tables_s4")
+dir.create(EXPORT_DIR, showWarnings = FALSE, recursive = TRUE)
 
+# Fallback paths if rendering from project root
 if (!dir.exists(RES_DIR) && dir.exists(file.path("simulation_conditions", "STUDY4", "results"))) {
   DATA_DIR <- file.path("simulation_conditions", "STUDY4", "data")
   RES_DIR <- file.path("simulation_conditions", "STUDY4", "results")
+  EXPORT_DIR <- file.path(RES_DIR, "exported_tables_s4")
+  dir.create(EXPORT_DIR, showWarnings = FALSE, recursive = TRUE)
 }
-
-EXPORT_DIR <- file.path(RES_DIR, "exported_tables")
-dir.create(EXPORT_DIR, showWarnings = FALSE, recursive = TRUE)
 
 files <- list(
   design = file.path(DATA_DIR, "sim_conditions_ml.rds"),
@@ -41,45 +50,310 @@ files <- list(
 )
 
 if (!all(file.exists(unlist(files[c("rep", "cond")])))) {
-  message("Missing required Study 4 inputs. Please run `run_pipeline_ml.R` and then `analysis_multilevel.R` first.")
-  message("Expected files:\n- ", paste(unlist(files), collapse = "\n- "))
-  if (knitr::is_html_output() || knitr::is_latex_output()) knitr::knit_exit()
+  stop(
+    "Missing required input files. Expected:\n",
+    " - ", files$rep, "\n",
+    " - ", files$cond, "\n",
+    " - ", files$design, " (optional)\n",
+    "Run the Study 4 pipeline (run_pipeline_ml.R) and analysis_multilevel.R first."
+  )
 }
+```
 
+# 0. Summary
+
+## 0.1 Computational Stability
+
+```{r summary_compute, echo=FALSE}
 rep_raw <- read_csv(files$rep, show_col_types = FALSE)
 cond_raw <- read_csv(files$cond, show_col_types = FALSE)
 
-# Optional design grid (used for design tables/labels). The report will still render without it.
 design <- NULL
 if (file.exists(files$design)) {
   design <- readRDS(files$design)
 }
 
-# Model labels used throughout the report
+# Model labels
 model_lab <- c(
-  EG_MLmin = "EG (Exponential margins)",
-  NG_MLmin = "NG (Gaussian margins)"
+  EG_MLmin = "Exponential–Gaussian (EG)",
+  NG_MLmin = "Normal–Gaussian (NG)"
 )
 
-# Keep the raw summaries but standardize types where helpful.
-rep_df <- rep_raw |> mutate(condition_id = as.integer(condition_id))
-cond_df <- cond_raw |> mutate(condition_id = as.integer(condition_id))
-
-# Fit-level table: one row per model × condition × replication.
-# (Do NOT count fit statuses on the full rep_df; that would overcount by the number of parameters.)
-fit_df <- rep_df |>
+# Fit-level summaries (one row per model × condition × replication)
+fit_df <- rep_raw |>
   distinct(model, condition_id, rep_id, status, n_div, max_rhat) |>
-  mutate(model = factor(model, levels = names(model_lab), labels = unname(model_lab)))
+  mutate(
+    model = factor(model, levels = names(model_lab), labels = unname(model_lab)),
+    condition_id = as.integer(condition_id)
+  )
 
-# Attach design information (if present)
+# Computational summary
+compute_summary <- fit_df |>
+  filter(status == "ok") |>
+  group_by(model) |>
+  summarise(
+    N_fits = n(),
+    Pct_divergent = mean(n_div > 0, na.rm = TRUE) * 100,
+    Med_max_Rhat = median(max_rhat, na.rm = TRUE),
+    Max_Rhat = max(max_rhat, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+kable(compute_summary, 
+      digits = c(0, 0, 1, 3, 3),
+      col.names = c("Model", "N Fits", "% with Divergences", "Median max R̂", "Max R̂"),
+      caption = "Computational diagnostics summary for completed fits.")
+```
+
+Both models generally complete fitting, though the Exponential–Gaussian (EG) model may exhibit more divergent transitions due to the interaction between (i) hierarchical intercepts and (ii) the data-dependent feasibility bound required for exponential margins. The Normal–Gaussian (NG) model typically shows cleaner sampling geometry.
+
+## 0.2 Model Performance Under Exponential DGP
+
+**Exponential–Gaussian (EG):** The correctly specified model is approximately unbiased for the VAR dynamics ($\Phi$), copula correlation ($\rho$), and hierarchical parameters ($\bar{\mu}$, $\tau_\mu$). Coverage is close to nominal (0.95) for most parameters, with potential under-coverage when divergent transitions are present.
+
+**Normal–Gaussian (NG):** The misspecified model recovers the VAR dynamics and hierarchical intercept structure without substantial bias, consistent with findings from Studies 1–3 showing robustness of these parameters to marginal misspecification. The copula parameter $\rho$ may exhibit attenuation due to PIT distortion from marginal misspecification.
+
+## 0.3 Key Insights
+
+1. **Multilevel structure adds complexity to EG estimation**: The global feasibility bound must be computed across all $N \times (T-1)$ residuals, creating tighter coupling between hierarchical and marginal parameters.
+
+2. **Hierarchical parameters are robust to marginal misspecification**: Both models recover $\bar{\mu}$ and $\tau_\mu$ with similar accuracy, extending the robustness finding from single-level studies.
+
+3. **ρ attenuation persists in the multilevel setting**: Under marginal misspecification (NG), the copula correlation shows the same PIT-distortion-induced attenuation observed in Studies 1–2.
+
+4. **Scale parameters are model-specific**: `sigma` (NG) and `sigma_exp` (EG) should be interpreted within their respective margin families, not compared directly.
+
+# 1. Introduction
+
+This simulation study extends the copula VAR framework from Studies 1–3 to a **multilevel (panel) setting** with unit-specific random intercepts. It compares two Bayesian VAR(1) models under exponential innovations:
+
+- **Normal–Gaussian (NG)**: Normal marginals + Gaussian copula (misspecified margins)
+- **Exponential–Gaussian (EG)**: Exponential marginals + Gaussian copula (correct margins)
+
+Both models employ a "minimal pooling" hierarchical structure where only intercepts vary by unit; VAR dynamics, copula correlation, and marginal scale parameters are global (shared across units).
+
+## 1.1. Data Generating Process (DGP)
+
+### Multilevel VAR(1) Structure
+
+For unit $i = 1, \ldots, N$ and time $t = 2, \ldots, T$:
+
+$$
+Y_{i,t} = \mu_i + \Phi Y_{i,t-1} + \varepsilon_{i,t}
+$$
+
+where:
+
+- $Y_{i,t} \in \mathbb{R}^2$ is the bivariate outcome for unit $i$ at time $t$
+- $\Phi \in \mathbb{R}^{2 \times 2}$ is the **global** VAR coefficient matrix (shared across units)
+- $\mu_i \in \mathbb{R}^2$ is the **unit-specific** intercept vector
+
+### Hierarchical Intercept Structure
+
+Unit intercepts follow a normal hierarchy with diagonal covariance:
+
+$$
+\mu_i \sim \mathcal{N}\left(\bar{\mu}, \; \text{diag}(\tau_\mu^2)\right)
+$$
+
+where:
+
+- $\bar{\mu} = (0, 0)^{\top}$ is the population mean intercept
+- $\tau_\mu = (\tau_{\mu,1}, \tau_{\mu,2})$ is the between-unit standard deviation vector
+- The covariance is diagonal (intercept dimensions are independent conditional on hyperparameters)
+
+::: {.callout-note}
+## Minimal Pooling
+
+This is called "minimal pooling" because only intercepts vary by unit. The VAR dynamics ($\Phi$), copula correlation ($\rho$), and marginal scale parameters are global. This structure is appropriate when units share common dynamics but differ in their baseline levels.
+:::
+
+### Innovation Structure
+
+Innovations $\varepsilon_{i,t} = (\varepsilon_{i,t,1}, \varepsilon_{i,t,2})$ have:
+
+1. **Marginals**: Standardized Exponential (mean 0, variance 1)
+2. **Dependence**: Gaussian copula with correlation $\rho$
+
+::: {.callout-note}
+## Standardization of Exponential Innovations
+
+For $X \sim \text{Exponential}(\text{rate} = 1)$ with $\mathbb{E}[X] = 1$ and $\text{SD}(X) = 1$:
+
+$$
+Z = X - 1
+$$
+
+yields $\mathbb{E}[Z] = 0$ and $\text{Var}(Z) = 1$. Optional mirroring ($-Z$) produces left-skewed innovations.
+:::
+
+::: {.callout-important}
+## Copula Sign Under Mirroring
+
+As in Study 2, mirroring an exponential margin corresponds to the PIT transformation $u \mapsto 1 - u$, which flips the sign of the copula correlation:
+
+$$
+\rho_{\text{eff}} = s_1 \cdot s_2 \cdot \rho
+$$
+
+where $s_j \in \{+1, -1\}$ with $s_j = -1$ indicating a mirrored (left-skew) margin.
+:::
+
+### Joint Innovation Density
+
+The joint density of $(\varepsilon_{i,t,1}, \varepsilon_{i,t,2})$ is:
+
+$$
+f(\varepsilon_1, \varepsilon_2) = c_{\text{Gauss}}\bigl(F_1(\varepsilon_1), F_2(\varepsilon_2); \rho\bigr) \cdot f_1(\varepsilon_1) \cdot f_2(\varepsilon_2)
+$$
+
+where $F_j$ and $f_j$ are the marginal CDF and PDF of the standardized (and optionally mirrored) exponential distribution, and $c_{\text{Gauss}}$ is the Gaussian copula density.
+
+## 1.2. Simulation Design
+
+The study employs a factorial design with two conditions varying in time-series length ($T$), while keeping between-unit heterogeneity ($\tau_\mu$) fixed.
+
+```{r design_table, echo=FALSE}
+fmt_vec2 <- function(v) sprintf("(%.2f, %.2f)", v[1], v[2])
+fmt_phi <- function(P) {
+  if (is.null(P) || any(dim(P) != c(2, 2))) return(NA_character_)
+  sprintf("$\\begin{pmatrix} %.2f & %.2f \\\\ %.2f & %.2f \\end{pmatrix}$", P[1,1], P[1,2], P[2,1], P[2,2])
+}
+
+N_txt <- if (!is.null(design) && "N_units" %in% names(design)) paste(sort(unique(design$N_units)), collapse = ", ") else "40"
+T_txt <- if (!is.null(design) && "T" %in% names(design)) paste(sort(unique(design$T)), collapse = ", ") else "50, 100"
+burn_txt <- if (!is.null(design) && "burnin" %in% names(design)) paste(sort(unique(design$burnin)), collapse = ", ") else "50"
+rho_txt <- if (!is.null(design) && "rho" %in% names(design)) paste(sort(unique(design$rho)), collapse = ", ") else "0.50"
+phi_txt <- if (!is.null(design) && "phi_matrix" %in% names(design)) fmt_phi(design$phi_matrix[[1]]) else fmt_phi(matrix(c(0.40, 0.10, 0.10, 0.40), 2, 2, byrow = TRUE))
+dir_txt <- if (!is.null(design) && "direction" %in% names(design)) paste(sort(unique(design$direction)), collapse = ", ") else "++"
+
+tau_txt <- "(0.15, 0.15)"
+if (!is.null(design) && "tau_mu" %in% names(design)) {
+  tau_lev <- unique(vapply(design$tau_mu, fmt_vec2, character(1)))
+  tau_txt <- paste(tau_lev, collapse = "; ")
+}
+
+design_summary <- tibble(
+  Factor = c(
+    "Number of Units ($N$)",
+    "Time Series Length ($T$)",
+    "Burn-in Period",
+    "Copula Correlation ($\\rho$)",
+    "VAR Parameters ($\\Phi$)",
+    "",
+    "Skewness Direction",
+    "Between-Unit SD ($\\tau_\\mu$)"
+  ),
+  Levels = c(
+    N_txt,
+    T_txt,
+    paste0(burn_txt, " (discarded)"),
+    rho_txt,
+    phi_txt,
+    "",
+    paste0("`", dir_txt, "`"),
+    tau_txt
+  )
+)
+
+kable(design_summary, caption = "Summary of the Simulation Design Factors.", escape = FALSE)
+```
+
+::: {.callout-note}
+## Design Focus: Time-Series Length
+
+In this multilevel setting, $T$ directly governs the amount of within-unit information available to learn the VAR dynamics and the copula dependence. This study compares $T=50$ vs $T=100$ while keeping the between-unit heterogeneity level ($\tau_\mu$) fixed.
+:::
+
+## 1.3. True Parameter Values
+
+```{r true_params_table, echo=FALSE}
+true_params <- tibble(
+  Parameter = c(
+    "$\\bar{\\mu}_1, \\bar{\\mu}_2$",
+    "$\\tau_{\\mu,1}, \\tau_{\\mu,2}$",
+    "$\\mu_{i,1}, \\mu_{i,2}$",
+    "$\\phi_{11}, \\phi_{22}$",
+    "$\\phi_{12}, \\phi_{21}$",
+    "$\\rho$",
+    "$\\sigma_1, \\sigma_2$ (NG model)",
+    "$\\sigma_{\\text{exp},1}, \\sigma_{\\text{exp},2}$ (EG model)"
+  ),
+  `True Value` = c(
+    "0, 0",
+    if (exists("tau_txt")) tau_txt else "(0.15, 0.15)",
+    "$\\sim \\mathcal{N}(0, \\tau_\\mu^2)$",
+    "0.40",
+    "0.10",
+    "0.50",
+    "1.0, 1.0",
+    "1.0, 1.0"
+  ),
+  Scope = c(
+    "Population mean (global)",
+    "Between-unit SD (global)",
+    "Unit-specific (random)",
+    "Global",
+    "Global",
+    "Global",
+    "Global",
+    "Global"
+  )
+)
+
+kable(true_params, caption = "True Parameter Values Used in the Data Generating Process.", escape = FALSE)
+```
+
+::: {.callout-note}
+## Unit-Level Ground Truth
+
+Each simulated dataset has unit-specific true intercepts $\mu_i$ drawn from the hierarchical distribution. The analysis script uses these realized values (stored in `true_params$mu_mat`) as ground truth for computing unit-level bias and coverage.
+:::
+
+## 1.4. Visual Check: Exponential Marginal Innovations
+
+```{r dgp_marginal_viz, fig.width=10, fig.height=5, echo=FALSE}
+set.seed(42)
+N_draw <- 100000
+
+# Standardized exponential
+x_raw <- rexp(N_draw, rate = 1)
+x_std_right <- x_raw - 1
+x_std_left <- -(x_raw - 1)
+
+plot_df <- tibble(
+  value = c(x_std_right, x_std_left),
+  dist = rep(c("Standardized Exp (right-skew)", "Mirrored Exp (left-skew)"), each = N_draw)
+)
+
+ggplot(plot_df, aes(x = value, fill = dist)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 100, alpha = 0.5, position = "identity") +
+  stat_function(fun = dnorm, linewidth = 0.8, linetype = "dashed", color = "black") +
+  geom_vline(xintercept = 0, linetype = "dotted", color = "grey40") +
+  facet_wrap(~ dist, scales = "free_x", ncol = 2) +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "Standardized Exponential innovations used in Study 4",
+    subtitle = "Dashed line shows standard normal for comparison",
+    x = "Value", y = "Density"
+  ) +
+  guides(fill = "none") +
+  scale_fill_brewer(palette = "Set1")
+```
+
+**Interpretation.** The standardized exponential distribution has mean 0 and variance 1 but exhibits right-skewness (skewness $\approx 2$). This asymmetry cannot be captured by the normal marginals in the NG model, leading to PIT distortion and potential attenuation in the estimated copula correlation.
+
+# 2. Data Loading and Preparation
+
+```{r data_prep, echo=FALSE}
+# Attach design information if available
 if (!is.null(design)) {
   design_aug <- design |>
     mutate(
       condition_id = as.integer(condition_id),
       N_units = as.integer(N_units),
       T = as.integer(T),
-      burnin = as.integer(burnin),
-      rho = as.numeric(rho),
+      rho_val = as.numeric(rho),
       VARset = as.character(VARset),
       direction = as.character(direction),
       tau_mu_1 = vapply(tau_mu, function(v) v[1], numeric(1)),
@@ -87,422 +361,681 @@ if (!is.null(design)) {
       phi11 = vapply(phi_matrix, function(M) M[1, 1], numeric(1)),
       phi12 = vapply(phi_matrix, function(M) M[1, 2], numeric(1)),
       phi21 = vapply(phi_matrix, function(M) M[2, 1], numeric(1)),
-      phi22 = vapply(phi_matrix, function(M) M[2, 2], numeric(1))
+      phi22 = vapply(phi_matrix, function(M) M[2, 2], numeric(1)),
+      condition_label = case_when(
+        tau_mu_1 < 0.3 ~ "Low Heterogeneity",
+        TRUE ~ "High Heterogeneity"
+      )
     ) |>
-    select(
-      condition_id, N_units, T, burnin, rho, VARset, direction,
-      tau_mu_1, tau_mu_2, phi11, phi12, phi21, phi22
-    )
-
+    select(condition_id, N_units, T, rho_val, VARset, direction,
+           tau_mu_1, tau_mu_2, phi11, phi12, phi21, phi22, condition_label)
+  
   fit_df <- fit_df |> left_join(design_aug, by = "condition_id")
-  cond_df <- cond_df |> left_join(design_aug, by = "condition_id")
-  rep_df <- rep_df |> left_join(design_aug, by = "condition_id")
+  cond_raw <- cond_raw |> 
+    mutate(condition_id = as.integer(condition_id)) |>
+    left_join(design_aug, by = "condition_id")
+  rep_raw <- rep_raw |> 
+    mutate(condition_id = as.integer(condition_id)) |>
+    left_join(design_aug, by = "condition_id")
 }
 
-# Plot theme for consistency across studies
-theme_study <- function() {
-  theme_minimal(base_size = 12) +
-    theme(
-      legend.position = "bottom",
-      panel.grid.minor = element_blank(),
-      axis.text.x = element_text(angle = 45, hjust = 1)
+# Prepare condition-level data
+cond_df <- cond_raw |>
+  mutate(
+    Model = factor(
+      model,
+      levels = names(model_lab),
+      labels = unname(model_lab)
+    )
+  )
+
+# Prepare replication-level data  
+rep_df <- rep_raw |>
+  mutate(
+    Model = factor(
+      model,
+      levels = names(model_lab),
+      labels = unname(model_lab)
+    )
+  )
+
+# Parameter ordering
+param_levels <- c(
+  # Hierarchical
+  "mu_bar[1]", "mu_bar[2]", "tau_mu[1]", "tau_mu[2]",
+  # VAR dynamics
+  "phi11", "phi12", "phi21", "phi22",
+  # Copula
+  "rho",
+  # Marginal scales
+  "sigma[1]", "sigma[2]", "sigma_exp[1]", "sigma_exp[2]",
+  # Unit-level
+  "mu[1]", "mu[2]"
+)
+
+cond_df <- cond_df |>
+  mutate(param = factor(param, levels = param_levels))
+```
+
+## 2.1. MCMC Classification and Overview
+
+We classify runs based on MCMC diagnostics ($\hat{R}$ and divergent transitions) using the same criteria as Studies 1–3:
+
+- **Clean**: $\hat{R} \leq 1.01$ and no post-warmup divergences.
+- **Problematic**: $\hat{R} > 1.01$ or at least one divergence.
+- **Failed/Error**: Non-OK status or missing diagnostics.
+
+```{r mcmc_classification, echo=FALSE}
+RHAT_THRESHOLD <- 1.01
+
+fit_df <- fit_df |>
+  mutate(
+    n_div_clean = ifelse(is.na(n_div), 0L, as.integer(n_div)),
+    mcmc_status = case_when(
+      is.na(max_rhat) | status != "ok" ~ "Failed/Error",
+      max_rhat > RHAT_THRESHOLD | n_div_clean > 0 ~ "Problematic",
+      TRUE ~ "Clean"
+    ),
+    mcmc_status = factor(mcmc_status, levels = c("Clean", "Problematic", "Failed/Error"))
+  )
+
+mcmc_summary <- fit_df |>
+  group_by(Model, mcmc_status) |>
+  summarise(Count = n(), .groups = "drop") |>
+  tidyr::pivot_wider(names_from = mcmc_status, values_from = Count, values_fill = 0)
+
+kable(mcmc_summary, caption = "MCMC convergence status by model.")
+```
+
+```{r mcmc_status_plot, fig.height=4, fig.width=8, echo=FALSE}
+mcmc_plot_df <- fit_df |>
+  group_by(Model, condition_id, mcmc_status) |>
+  summarise(Count = n(), .groups = "drop")
+
+if (!is.null(design)) {
+  mcmc_plot_df <- mcmc_plot_df |>
+    left_join(design_aug |> select(condition_id, condition_label), by = "condition_id")
+}
+
+ggplot(mcmc_plot_df, aes(x = Model, y = Count, fill = mcmc_status)) +
+  geom_bar(stat = "identity", position = "stack") +
+  {if ("condition_label" %in% names(mcmc_plot_df)) facet_wrap(~ condition_label)} +
+  labs(
+    title = "MCMC convergence status by model (Study 4)",
+    x = NULL, y = "Number of replications",
+    fill = "MCMC Status"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "bottom") +
+  scale_fill_manual(values = c("Clean" = "#4daf4a", "Problematic" = "#ff7f00", "Failed/Error" = "#e41a1c"))
+```
+
+**Interpretation.** The EG model may show more divergent transitions than NG due to the data-dependent feasibility bound interacting with hierarchical intercept estimation. This is consistent with the computational challenges noted in Study 2 for the single-level EG model, now amplified by the multilevel structure.
+
+```{r divergence_dist, fig.height=4, fig.width=8, echo=FALSE}
+div_data <- fit_df |>
+  filter(status == "ok")
+
+if (nrow(div_data) > 0 && max(div_data$n_div_clean, na.rm = TRUE) > 0) {
+  ggplot(div_data, aes(x = Model, y = n_div_clean, fill = Model)) +
+    geom_boxplot(outlier.alpha = 0.4) +
+    {if ("condition_label" %in% names(div_data)) facet_wrap(~ condition_label)} +
+    labs(
+      title = "Distribution of post-warmup divergent transitions",
+      x = NULL, y = "Number of divergences"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(legend.position = "none") +
+    scale_fill_brewer(palette = "Set2")
+} else {
+  cat("All completed fits have zero divergent transitions.")
+}
+```
+
+# 3. Helpers
+
+```{r helpers, echo=FALSE}
+theme_standard <- theme_bw(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+
+theme_facet <- theme_bw(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    strip.text = element_text(size = 9),
+    axis.text = element_text(size = 9),
+    panel.spacing = grid::unit(0.5, "lines")
+  )
+
+model_colors <- c(
+  "Normal–Gaussian (NG)" = "#377eb8",
+  "Exponential–Gaussian (EG)" = "#4daf4a"
+)
+
+plot_metric <- function(data, metric_col, ylab, title, params = NULL,
+                        use_free_y = FALSE, ylims = NULL) {
+  df <- data |>
+    filter(!is.na(.data[[metric_col]]))
+  
+  if (!is.null(params)) {
+    df <- df |> filter(param %in% params)
+  }
+  
+  if (nrow(df) == 0) {
+    message("Skipping plot '", title, "': no data available.")
+    return(NULL)
+  }
+  
+  # Use condition_label if available, otherwise condition_id
+  facet_var <- if ("condition_label" %in% names(df)) "condition_label" else "condition_id"
+  
+  p <- ggplot(df, aes(x = param, y = .data[[metric_col]], fill = Model)) +
+    geom_col(position = position_dodge(width = 0.75), width = 0.7) +
+    facet_wrap(as.formula(paste("~", facet_var)), nrow = 1) +
+    theme_facet +
+    scale_fill_manual(values = model_colors) +
+    labs(title = title, y = ylab, x = NULL) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+  
+  if (metric_col %in% c("mean_rel_bias", "sd_bias", "mean_bias")) {
+    p <- p + geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")
+  } else if (metric_col == "coverage_95") {
+    p <- p + geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey50")
+  }
+  
+  if (!is.null(ylims)) {
+    p <- p + coord_cartesian(ylim = ylims)
+  }
+  
+  p
+}
+
+summarise_conditions <- function(df) {
+  df |>
+    group_by(Model, condition_id, param) |>
+    summarise(
+      mean_rel_bias = mean(rel_bias, na.rm = TRUE),
+      coverage_95 = mean(cover95, na.rm = TRUE),
+      mean_post_sd = mean(post_sd, na.rm = TRUE),
+      emp_sd = sd(post_mean, na.rm = TRUE),
+      mean_bias = mean(bias, na.rm = TRUE),
+      N_valid = n(),
+      .groups = "drop"
+    ) |>
+    mutate(
+      emp_sd = ifelse(is.na(emp_sd), 0, emp_sd),
+      sd_bias = mean_post_sd - emp_sd,
+      RMSE = sqrt(mean_bias^2 + emp_sd^2)
     )
 }
+```
 
-safe_print <- function(x, msg = "(No data to display.)") {
-  if (is.null(x) || (inherits(x, "data.frame") && nrow(x) == 0)) {
-    cat(msg)
-  } else {
-    print(x)
+# 4. Shared Global Parameters ($\Phi$, $\rho$)
+
+These parameters are shared across units and common to both models, enabling direct comparison.
+
+```{r shared_globals_prep, echo=FALSE}
+shared_globals <- c("phi11", "phi12", "phi21", "phi22", "rho")
+
+shared_df <- cond_df |>
+  filter(param %in% shared_globals, N_valid > 0)
+```
+
+## 4.1. Relative Bias
+
+```{r shared_bias, fig.height=4.5, fig.width=10, echo=FALSE}
+plot_metric(
+  shared_df,
+  metric_col = "mean_rel_bias",
+  ylab = "Mean relative bias",
+  title = "Relative bias: VAR dynamics and copula correlation",
+  params = shared_globals
+)
+```
+
+**Interpretation.** Both models show similar bias patterns for the VAR coefficients ($\Phi$). For the copula correlation ($\rho$), the NG model may exhibit attenuation (negative bias) due to PIT distortion from marginal misspecification, consistent with findings from Studies 1–2.
+
+## 4.2. 95% Coverage
+
+```{r shared_coverage, fig.height=4.5, fig.width=10, echo=FALSE}
+plot_metric(
+  shared_df,
+  metric_col = "coverage_95",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: VAR dynamics and copula correlation",
+  params = shared_globals,
+  ylims = c(0.5, 1.0)
+)
+```
+
+**Interpretation.** Coverage close to 0.95 indicates well-calibrated posterior uncertainty. Deviations may reflect either bias (which shifts credible intervals away from the truth) or inappropriate posterior width (SD-bias).
+
+## 4.3. SD-Bias
+
+```{r shared_sdbias, fig.height=4.5, fig.width=10, echo=FALSE}
+plot_metric(
+  shared_df,
+  metric_col = "sd_bias",
+  ylab = "SD-bias (posterior SD − empirical SD)",
+  title = "SD-bias: VAR dynamics and copula correlation",
+  params = shared_globals
+)
+```
+
+**Interpretation.** SD-bias near zero indicates that the posterior standard deviation matches the empirical variability of posterior means across replications. Positive SD-bias suggests overly conservative (wide) intervals; negative SD-bias suggests overconfident (narrow) intervals.
+
+# 5. Hierarchical Parameters ($\bar{\mu}$, $\tau_\mu$)
+
+These hyperparameters govern the population distribution of unit-level intercepts.
+
+```{r hier_params_prep, echo=FALSE}
+hier_params <- c("mu_bar[1]", "mu_bar[2]", "tau_mu[1]", "tau_mu[2]")
+
+hier_df <- cond_df |>
+  filter(param %in% hier_params, N_valid > 0)
+```
+
+## 5.1. Bias
+
+```{r hier_bias, fig.height=4.5, fig.width=10, echo=FALSE}
+# Use absolute bias for mu_bar (truth = 0)
+plot_metric(
+  hier_df,
+  metric_col = "mean_bias",
+  ylab = "Mean bias",
+  title = "Bias: Hierarchical parameters",
+  params = hier_params
+)
+```
+
+**Interpretation.** Both models should recover the hierarchical hyperparameters with similar accuracy since these depend primarily on the distribution of unit-level intercepts, not the marginal innovation distribution. The key question is whether marginal misspecification in NG propagates to hierarchical inference.
+
+## 5.2. 95% Coverage
+
+```{r hier_coverage, fig.height=4.5, fig.width=10, echo=FALSE}
+plot_metric(
+  hier_df,
+  metric_col = "coverage_95",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: Hierarchical parameters",
+  params = hier_params,
+  ylims = c(0.5, 1.0)
+)
+```
+
+## 5.3. SD-Bias
+
+```{r hier_sdbias, fig.height=4.5, fig.width=10, echo=FALSE}
+plot_metric(
+  hier_df,
+  metric_col = "sd_bias",
+  ylab = "SD-bias",
+  title = "SD-bias: Hierarchical parameters",
+  params = hier_params
+)
+```
+
+::: {.callout-note}
+## Estimation of $\tau_\mu$
+
+The between-unit standard deviation $\tau_\mu$ is primarily identified by the spread of unit-level intercepts across the $N$ units, not by the time series length $T$. With $N = 40$ units, there is reasonable information to estimate $\tau_\mu$, though uncertainty remains substantial.
+:::
+
+# 6. Marginal Scale Parameters
+
+The scale parameters are defined within each margin family and are not directly comparable across models:
+
+- **NG**: `sigma[1]`, `sigma[2]` (Gaussian innovation SDs)
+- **EG**: `sigma_exp[1]`, `sigma_exp[2]` (Exponential scale with feasibility constraint)
+
+```{r marginal_params_prep, echo=FALSE}
+sigma_ng <- c("sigma[1]", "sigma[2]")
+sigma_eg <- c("sigma_exp[1]", "sigma_exp[2]")
+
+scale_df <- cond_df |>
+  filter(param %in% c(sigma_ng, sigma_eg), N_valid > 0)
+```
+
+## 6.1. Bias (Reference = 1)
+
+```{r scale_bias, fig.height=4.5, fig.width=10, echo=FALSE}
+plot_metric(
+  scale_df,
+  metric_col = "mean_bias",
+  ylab = "Mean bias (truth = 1)",
+  title = "Bias: Marginal scale parameters"
+)
+```
+
+## 6.2. 95% Coverage
+
+```{r scale_coverage, fig.height=4.5, fig.width=10, echo=FALSE}
+plot_metric(
+  scale_df,
+  metric_col = "coverage_95",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: Marginal scale parameters",
+  ylims = c(0.5, 1.0)
+)
+```
+
+::: {.callout-warning}
+## Interpretation of `sigma_exp` in EG
+
+The exponential-margin model enforces positivity through a data-dependent lower-bound construction:
+
+$$
+\sigma_{\text{exp},j} = b_j + \exp(\eta_j)
+$$
+
+where $b_j = \max_{i,t}(-s_j \cdot \text{res}_{i,t,j})$ is the global feasibility bound computed across all units and time points. This means:
+
+1. `sigma_exp` is a composite of a feasibility bound and a slack term
+2. The bound depends on all residuals across all $N$ units
+3. This creates tighter coupling between parameters in the multilevel setting
+
+**Recommendation**: Treat `sigma` and `sigma_exp` as within-model diagnostics rather than directly comparable estimands.
+:::
+
+# 7. Unit-Level Intercepts ($\mu_i$)
+
+```{r unit_level_prep, echo=FALSE}
+has_unit <- "unit" %in% names(rep_df) && any(!is.na(rep_df$unit))
+
+if (has_unit) {
+  unit_df <- rep_df |>
+    filter(!is.na(unit), param %in% c("mu[1]", "mu[2]")) |>
+    group_by(Model, condition_id, param) |>
+    summarise(
+      N_units_x_reps = n(),
+      mean_bias = mean(bias, na.rm = TRUE),
+      coverage_95 = mean(cover95, na.rm = TRUE),
+      mean_post_sd = mean(post_sd, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  if ("condition_label" %in% names(rep_df)) {
+    cond_labels <- rep_df |>
+      distinct(condition_id, condition_label)
+    unit_df <- unit_df |>
+      left_join(cond_labels, by = "condition_id")
   }
 }
 ```
 
-# 0. tl;dr
-
-```{r tldr, echo=FALSE}
-# Fit success rates (by model)
-tldr_status <- fit_df |>
-  group_by(model) |>
-  summarise(
-    n_fits = n(),
-    ok_rate = mean(status == "ok", na.rm = TRUE),
-    div_rate = mean(status == "ok" & n_div > 0, na.rm = TRUE),
-    med_max_rhat = median(max_rhat[status == "ok"], na.rm = TRUE),
-    .groups = "drop"
+```{r unit_level_table, echo=FALSE}
+if (has_unit && nrow(unit_df) > 0) {
+  kable(
+    unit_df |> select(-condition_id),
+    digits = 3,
+    caption = "Unit-level intercept performance (aggregated over units and replications)."
   )
-
-# Aggregate performance on parameters shared by both models
-shared_params <- c(
-  "phi11", "phi12", "phi21", "phi22", "rho",
-  "mu_bar[1]", "mu_bar[2]", "tau_mu[1]", "tau_mu[2]"
-)
-
-tldr_perf <- cond_df |>
-  filter(param %in% shared_params, N_valid > 0) |>
-  mutate(model = factor(model, levels = names(model_lab), labels = unname(model_lab))) |>
-  group_by(model) |>
-  summarise(
-    mean_abs_bias = mean(abs(mean_bias), na.rm = TRUE),
-    mean_cov95 = mean(coverage_95, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-safe_print(tldr_status)
-cat("\n\n")
-safe_print(tldr_perf)
-```
-
-## 0.1 Computational diagnostics
-
-- The table above reports per-model fit completion rates (`status == "ok"`), the fraction of completed fits with any divergent transitions, and the median of the maximum $\widehat{R}$ across parameters.
-- In this multilevel setting, divergent transitions are plausibly driven by the interaction between (i) hierarchical intercepts and (ii) the lower-bound constraint used by the exponential-margin model (see Section 5.2).
-
-## 0.2 Statistical performance
-
-- The second table reports mean absolute bias and mean 95% coverage across parameters shared by both models: $(\Phi,\rho,\bar\mu,\tau_\mu)$.
-- The marginal scale parameters are model-specific (`sigma` for NG, `sigma_exp` for EG) and should be interpreted within each margin family rather than compared directly.
-
-## 0.3 Practical implications
-
-- When the estimand of interest is the VAR dynamics or copula dependence, inference can be summarized primarily through $(\Phi,\rho)$, which are common to both models.
-- When the estimand of interest includes innovation scale and/or tail behavior, the margin family matters; this study quantifies that sensitivity under a standardized exponential DGP.
-
-# 1. Introduction
-
-## 1.1 Data-generating process
-
-For unit $i=1,\dots,N$ and time $t=2,\dots,T$, the data are generated from a bivariate VAR(1):
-$$
-Y_{i,t} = \mu_i + \Phi Y_{i,t-1} + \epsilon_{i,t},
-$$
-where $Y_{i,t}\in\mathbb{R}^2$, $\Phi\in\mathbb{R}^{2\times 2}$ is shared across units, and $\mu_i\in\mathbb{R}^2$ is unit-specific.
-
-The unit intercepts follow a minimal-pooling hierarchy:
-$$
-\mu_i \sim \mathcal{N}\!\left(\bar\mu,\; \mathrm{diag}(\tau_\mu^2)\right),
-$$
-with $\bar\mu=(0,0)$ in the DGP and $\tau_\mu=(\tau_{\mu,1},\tau_{\mu,2})$ varying across conditions.
-
-Innovations $\epsilon_{i,t}$ are generated using a Gaussian copula with correlation $\rho$ and exponential margins, then standardized to mean 0 and variance 1 (per margin). Specifically, if $X\sim\mathrm{Exp}(\text{scale}=s)$, then
-$$
-Z = \frac{X-s}{s}
-$$
-has $\mathbb{E}[Z]=0$ and $\mathrm{Var}(Z)=1$; optional mirroring produces left-skew via $-Z$.
-
-::: {.callout-note}
-**Standardization and comparability**
-All conditions are standardized so that the marginal innovation variance is 1. Consequently, scale parameters in fitted models have truth 1 under correct specification. Deviations from 1 reflect either finite-sample error or model misspecification.
-:::
-
-## 1.2 Simulation design
-
-```{r design_overview, echo=FALSE}
-if (is.null(design)) {
-  cat(sprintf("(Design file not found: `%s`. Skipping design tables.)", files$design))
 } else {
-  design_tbl <- design |>
-    mutate(
-      tau_mu_1 = vapply(tau_mu, function(v) v[1], numeric(1)),
-      tau_mu_2 = vapply(tau_mu, function(v) v[2], numeric(1))
-    ) |>
-    transmute(
-      condition_id,
-      N_units,
-      T,
-      rho,
-      VARset,
-      direction,
-      tau_mu = sprintf("(%.2f, %.2f)", tau_mu_1, tau_mu_2)
-    )
-
-  knitr::kable(design_tbl, caption = "Study 4 design grid (by condition).")
+  cat("(No unit-level summaries found in the results.)")
 }
 ```
 
-```{r phi_matrices, echo=FALSE}
-if (!is.null(design) && "phi_matrix" %in% names(design)) {
-  phi_by_set <- design |>
-    distinct(VARset, phi_matrix) |>
-    mutate(
-      Phi = vapply(
-        phi_matrix,
-        function(M) {
-          sprintf(
-            "$\\begin{pmatrix} %.2f & %.2f \\\\ %.2f & %.2f \\end{pmatrix}$",
-            M[1, 1], M[1, 2], M[2, 1], M[2, 2]
-          )
-        },
-        character(1)
-      )
-    ) |>
-    select(VARset, Phi)
-
-  knitr::kable(phi_by_set, caption = "VAR coefficient matrices by VARset.", escape = FALSE)
-}
-```
-
-## 1.3 Models
-
-Two multilevel models are fit to each simulated dataset:
-
-- **NG_MLmin**: Gaussian margins with scale parameters `sigma[1]`, `sigma[2]` and a Gaussian copula parameter $\rho$.
-- **EG_MLmin**: Exponential margins with scale parameters `sigma_exp[1]`, `sigma_exp[2]` and a Gaussian copula parameter $\rho$.
-
-Both models share the same hierarchical intercept structure $(\bar\mu,\tau_\mu)$ and the same global VAR parameters $(\Phi,\rho)$.
-
-# 2. Data loading and preparation
-This report reads the summary artifacts produced by `run_pipeline_ml.R` and `analysis_multilevel.R` (paths shown relative to the Study 4 directory):
-
-- `data/sim_conditions_ml.rds` (optional; simulation design table used for reporting).
-- `results/summary_replications_ml.csv` (required; per-replication parameter summaries and diagnostics).
-- `results/summary_conditions_ml.csv` (required; condition-level summaries: mean bias, coverage, etc.).
-
-The replication-level file contains posterior summaries and diagnostics for each fitted dataset; the condition-level file aggregates those summaries across replications within each condition.
-
-# 3. Computational performance
-
-## 3.1 Fit status
-
-```{r fit_status_table, echo=FALSE}
-status_tbl <- fit_df |>
-  count(model, status, name = "n") |>
-  group_by(model) |>
-  mutate(prop = n / sum(n)) |>
-  ungroup()
-
-knitr::kable(status_tbl, caption = "Fit status counts (fit-level).")
-```
-
-```{r fit_status_plot, fig.width=7, fig.height=3.6, echo=FALSE}
-ggplot(status_tbl, aes(status, n, fill = model)) +
-  geom_col(position = position_dodge(width = 0.7)) +
-  labs(title = "Fit statuses", x = NULL, y = "Number of fits") +
-  theme_study()
-```
-
-## 3.2 Divergences and $\widehat{R}$
-
-```{r div_rhat_plot, fig.width=7, fig.height=3.6, echo=FALSE}
-ok_fits <- fit_df |> filter(status == "ok")
-
-if (nrow(ok_fits) == 0) {
-  cat("(No completed fits: status == 'ok'.)")
-} else {
-  p1 <- ggplot(ok_fits, aes(model, n_div)) +
-    geom_boxplot(outlier.alpha = 0.3) +
-    labs(title = "Divergent transitions (completed fits)", x = NULL, y = "n_div") +
-    theme_study() +
-    theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
-
-  p2 <- ggplot(ok_fits, aes(model, max_rhat)) +
-    geom_boxplot(outlier.alpha = 0.3) +
-    labs(title = "Maximum R-hat (completed fits)", x = NULL, y = "max_rhat") +
-    theme_study() +
-    theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
-
+```{r unit_level_plot, fig.height=4.5, fig.width=10, echo=FALSE}
+if (has_unit && nrow(unit_df) > 0) {
+  p1 <- ggplot(unit_df, aes(x = param, y = mean_bias, fill = Model)) +
+    geom_col(position = position_dodge(width = 0.75)) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+    {if ("condition_label" %in% names(unit_df)) facet_wrap(~ condition_label)} +
+    labs(title = "Unit-level intercepts: Mean bias", y = "Mean bias", x = NULL) +
+    theme_facet +
+    scale_fill_manual(values = model_colors)
+  
+  p2 <- ggplot(unit_df, aes(x = param, y = coverage_95, fill = Model)) +
+    geom_col(position = position_dodge(width = 0.75)) +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey50") +
+    {if ("condition_label" %in% names(unit_df)) facet_wrap(~ condition_label)} +
+    labs(title = "Unit-level intercepts: 95% coverage", y = "Coverage", x = NULL) +
+    theme_facet +
+    scale_fill_manual(values = model_colors) +
+    coord_cartesian(ylim = c(0.5, 1.0))
+  
   print(p1)
   print(p2)
 }
 ```
 
-# 4. Statistical performance
+**Interpretation.** Unit-level intercepts are estimated conditional on the hierarchical hyperparameters. Coverage below 0.95 may indicate either bias in the point estimates or underestimated uncertainty. The high heterogeneity condition (C2) typically shows better coverage because there is more "signal" in the unit-level variation.
 
-Throughout, bias and coverage are computed relative to the known truth under the DGP. Condition-level summaries report:
+# 8. Export Tables
 
-- `mean_bias`: average posterior mean minus truth across valid replications,
-- `coverage_95`: proportion of 95% credible intervals covering the truth,
-- `mean_post_sd` and `emp_sd`: mean posterior SD and empirical SD of posterior means.
-
-## 4.1 Shared global parameters $(\Phi,\rho)$
-
-```{r shared_globals_prep, echo=FALSE}
-shared_globals <- c("phi11", "phi12", "phi21", "phi22", "rho")
-shared_df <- cond_df |>
-  filter(param %in% shared_globals, N_valid > 0) |>
-  mutate(
-    model = factor(model, levels = names(model_lab), labels = unname(model_lab)),
-    param = factor(param, levels = shared_globals),
-    condition_id = factor(condition_id)
+```{r export_tables, echo=FALSE}
+# Condition-level summary
+export_cond <- cond_df |>
+  select(
+    condition_id, Model, param,
+    any_of(c("condition_label", "N_units", "T", "tau_mu_1", "tau_mu_2")),
+    N_valid,
+    mean_bias, mean_rel_bias, coverage_95,
+    mean_post_sd, emp_sd, sd_bias
   )
+
+write_csv(export_cond, file.path(EXPORT_DIR, "analysis_summary_conditions.csv"))
+
+# MCMC health summary
+mcmc_export <- fit_df |>
+  count(Model, mcmc_status, name = "Count") |>
+  tidyr::pivot_wider(names_from = mcmc_status, values_from = Count, values_fill = 0)
+
+write_csv(mcmc_export, file.path(EXPORT_DIR, "analysis_mcmc_health.csv"))
+
+cat("Tables exported to:", EXPORT_DIR, "\n")
+cat(" - analysis_summary_conditions.csv\n")
+cat(" - analysis_mcmc_health.csv\n")
 ```
 
-```{r shared_bias_plot, fig.width=8.5, fig.height=4.2, echo=FALSE}
-if (nrow(shared_df) == 0) {
-  cat("(No shared-parameter summaries found.)")
-} else {
-  ggplot(shared_df, aes(param, mean_bias, fill = model)) +
-    geom_hline(yintercept = 0, color = "grey50") +
-    geom_col(position = position_dodge(width = 0.75)) +
-    facet_wrap(~condition_id, nrow = 1) +
-    labs(title = "Mean bias for shared global parameters", x = NULL, y = "Mean bias") +
-    theme_study()
-}
-```
+# 9. Technical Details
 
-```{r shared_cov_plot, fig.width=8.5, fig.height=4.2, echo=FALSE}
-if (nrow(shared_df) == 0) {
-  cat("(No shared-parameter summaries found.)")
-} else {
-  ggplot(shared_df, aes(param, coverage_95, fill = model)) +
-    geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey40") +
-    geom_col(position = position_dodge(width = 0.75)) +
-    facet_wrap(~condition_id, nrow = 1) +
-    labs(title = "95% coverage for shared global parameters", x = NULL, y = "Coverage") +
-    scale_y_continuous(labels = percent_format(accuracy = 1)) +
-    theme_study()
-}
-```
+## 9.1. Prior Specifications
 
-## 4.2 Marginal scale parameters
+Both models share common priors for hierarchical and VAR parameters. The key difference is in the marginal scale parameterization.
 
-The scale parameters are defined within each margin family:
+**Table: Prior Specifications for the Normal–Gaussian (NG) Model**
 
-- NG: `sigma[1]`, `sigma[2]` (Gaussian margins),
-- EG: `sigma_exp[1]`, `sigma_exp[2]` (exponential margins with positivity constraint).
+| Parameter | Prior | Support | Rationale |
+|-----------|-------|---------|-----------|
+| $\bar{\mu}_1, \bar{\mu}_2$ | Normal(0, 1) | $\mathbb{R}$ | Weakly informative; centered at true value (0) |
+| $\tau_{\mu,1}, \tau_{\mu,2}$ | Half-$t$(3, 0, 0.5) | $(0, \infty)$ | Weakly informative; allows substantial heterogeneity |
+| $z_{\mu,i}$ | Normal(0, 1) | $\mathbb{R}$ | Non-centered parameterization latents |
+| $\phi_{11}, \phi_{12}, \phi_{21}, \phi_{22}$ | Normal(0, 0.5) | $(-1, 1)$ | Regularizes toward stationarity |
+| $\sigma_1, \sigma_2$ | Half-Normal(0, 1) | $(0, \infty)$ | Weakly informative scale prior |
+| $\rho$ | Normal(0, 0.5) | $(-1, 1)$ | Regularizes toward independence |
 
-```{r scale_params_prep, echo=FALSE}
-scale_params <- c("sigma[1]", "sigma[2]", "sigma_exp[1]", "sigma_exp[2]")
-scale_df <- cond_df |>
-  filter(param %in% scale_params, N_valid > 0) |>
-  mutate(
-    model = factor(model, levels = names(model_lab), labels = unname(model_lab)),
-    param = factor(param, levels = scale_params),
-    condition_id = factor(condition_id)
-  )
-```
+**Table: Prior Specifications for the Exponential–Gaussian (EG) Model**
 
-```{r scale_bias_plot, fig.width=8.5, fig.height=4.2, echo=FALSE}
-if (nrow(scale_df) == 0) {
-  cat("(No scale-parameter summaries found.)")
-} else {
-  ggplot(scale_df, aes(param, mean_bias, fill = model)) +
-    geom_hline(yintercept = 0, color = "grey50") +
-    geom_col(position = position_dodge(width = 0.75)) +
-    facet_wrap(~condition_id, nrow = 1) +
-    labs(title = "Mean bias for marginal scale parameters", x = NULL, y = "Mean bias") +
-    theme_study()
-}
-```
+| Parameter | Prior | Support | Rationale |
+|-----------|-------|---------|-----------|
+| $\bar{\mu}_1, \bar{\mu}_2$ | Normal(0, 1) | $\mathbb{R}$ | Weakly informative |
+| $\tau_{\mu,1}, \tau_{\mu,2}$ | Half-$t$(3, 0, 0.5) | $(0, \infty)$ | Weakly informative |
+| $z_{\mu,i}$ | Normal(0, 1) | $\mathbb{R}$ | Non-centered parameterization |
+| $\phi_{11}, \phi_{12}, \phi_{21}, \phi_{22}$ | Normal(0, 0.5) | $(-1, 1)$ | Regularizes toward stationarity |
+| $\sigma_{\text{exp},1}, \sigma_{\text{exp},2}$ | Log-Normal(0, 0.5) | $(b_j, \infty)$ | Induced via $\eta$ reparameterization |
+| $\rho$ | Normal(0, 0.5) | $(-1, 1)$ | Regularizes toward independence |
 
-```{r scale_cov_plot, fig.width=8.5, fig.height=4.2, echo=FALSE}
-if (nrow(scale_df) == 0) {
-  cat("(No scale-parameter summaries found.)")
-} else {
-  ggplot(scale_df, aes(param, coverage_95, fill = model)) +
-    geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey40") +
-    geom_col(position = position_dodge(width = 0.75)) +
-    facet_wrap(~condition_id, nrow = 1) +
-    labs(title = "95% coverage for marginal scale parameters", x = NULL, y = "Coverage") +
-    scale_y_continuous(labels = percent_format(accuracy = 1)) +
-    theme_study()
-}
-```
+## 9.2. MCMC Settings
 
-## 4.3 Hierarchical parameters $(\bar\mu,\tau_\mu)$
-
-```{r hier_params_prep, echo=FALSE}
-hier_params <- c("mu_bar[1]", "mu_bar[2]", "tau_mu[1]", "tau_mu[2]")
-hier_df <- cond_df |>
-  filter(param %in% hier_params, N_valid > 0) |>
-  mutate(
-    model = factor(model, levels = names(model_lab), labels = unname(model_lab)),
-    param = factor(param, levels = hier_params),
-    condition_id = factor(condition_id)
-  )
-```
-
-```{r hier_bias_plot, fig.width=8.5, fig.height=4.2, echo=FALSE}
-if (nrow(hier_df) == 0) {
-  cat("(No hierarchical-parameter summaries found.)")
-} else {
-  ggplot(hier_df, aes(param, mean_bias, fill = model)) +
-    geom_hline(yintercept = 0, color = "grey50") +
-    geom_col(position = position_dodge(width = 0.75)) +
-    facet_wrap(~condition_id, nrow = 1) +
-    labs(title = "Mean bias for hierarchical parameters", x = NULL, y = "Mean bias") +
-    theme_study()
-}
-```
-
-```{r hier_cov_plot, fig.width=8.5, fig.height=4.2, echo=FALSE}
-if (nrow(hier_df) == 0) {
-  cat("(No hierarchical-parameter summaries found.)")
-} else {
-  ggplot(hier_df, aes(param, coverage_95, fill = model)) +
-    geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey40") +
-    geom_col(position = position_dodge(width = 0.75)) +
-    facet_wrap(~condition_id, nrow = 1) +
-    labs(title = "95% coverage for hierarchical parameters", x = NULL, y = "Coverage") +
-    scale_y_continuous(labels = percent_format(accuracy = 1)) +
-    theme_study()
-}
-```
-
-## 4.4 Unit-level intercepts $\mu_i$
-
-Replication-level summaries may include unit-specific parameters `mu[1]` and `mu[2]` (per unit). The aggregation below summarizes unit-level bias and coverage across all unit-parameters encountered in the replication-level file.
-
-```{r unit_level_summary, echo=FALSE}
-has_units <- "unit" %in% names(rep_df) && any(!is.na(rep_df$unit))
-
-if (!has_units) {
-  cat("(No unit-level summaries found in `summary_replications_ml.csv`.)")
-} else {
-  unit_df <- rep_df |>
-    filter(!is.na(unit), param %in% c("mu[1]", "mu[2]")) |>
-    mutate(
-      model = factor(model, levels = names(model_lab), labels = unname(model_lab)),
-      condition_id = factor(condition_id)
-    ) |>
-    group_by(model, condition_id, param) |>
-    summarise(
-      mean_bias = mean(bias, na.rm = TRUE),
-      coverage_95 = mean(cover95, na.rm = TRUE),
-      n = n(),
-      .groups = "drop"
-    )
-
-  knitr::kable(unit_df, caption = "Unit-level intercept performance (aggregated over units).")
-}
-```
-
-# 5. Discussion
-
-## 5.1 Interpretation relative to the design
-
-- Conditions differ primarily in the heterogeneity scale $\tau_\mu$ (and, depending on the design grid, may also vary in $T$, $\rho$, or $\Phi$).
-- Under the exponential DGP, EG_MLmin is correctly specified for the marginal family, whereas NG_MLmin is misspecified on the margins. A common pattern under skewness is that NG_MLmin compensates via `sigma` and can distort uncertainty quantification for shared parameters under limited sample size.
-
-## 5.2 Important caveats and recommendations
-
-::: {.callout-warning}
-**Caveat: interpretation of `sigma_exp` in EG_MLmin**
-
-The exponential-margin model enforces positivity through a data-dependent lower-bound construction:
-$$
-x_{i,t,j} = \sigma_{\text{exp},j} + s_j\,\epsilon_{i,t,j} > 0,
-$$
-where $s_j\in\{+1,-1\}$ encodes skew direction. Internally, $\sigma_{\text{exp},j}$ is parameterized as
-$$
-\sigma_{\text{exp},j} = b_j + \exp(\eta_j),
-$$
-with $b_j$ computed from the *current* residuals via a max operator. This implies:
-
-1. `sigma_exp` is a composite of a feasibility bound and a slack term; it is not a free scale parameter in the same sense as `sigma` in the Gaussian-margin model.
-2. The max-based bound can introduce non-smooth geometry in the posterior, increasing the risk of divergent transitions and sensitivity to tuning (e.g., `adapt_delta`).
-
-**Recommendation.** When comparing models, treat `sigma` and `sigma_exp` as *within-model* diagnostics of marginal adequacy rather than as directly comparable estimands. For substantive comparisons, prioritize shared parameters $(\Phi,\rho,\bar\mu,\tau_\mu)$ and report computational diagnostics alongside inferential summaries.
-:::
+| Setting | Value | Description |
+|---------|-------|-------------|
+| Chains | 4 | Independent Markov chains |
+| Total iterations | 3,000 | Per chain (including warmup) |
+| Warmup iterations | 1,500 | Adaptation period |
+| Post-warmup draws | 1,500 | Retained samples per chain |
+| `adapt_delta` | 0.90 | Target acceptance probability |
+| `max_treedepth` | 10 | Maximum NUTS tree depth |
+| Parallelization | Outer loop | Replications parallelized; chains sequential |
 
 ::: {.callout-note}
-**Additional recommendations**
+## Computational Recommendations
 
-- If divergences are non-negligible in EG_MLmin, re-fit with higher `adapt_delta` and/or stronger regularization on $(\Phi,\rho)$ before interpreting bias/coverage.
-- To isolate multilevel effects, expand the design grid in $N$ and $T$; estimation of $\tau_\mu$ is typically driven more by $N$ than by $T$.
+If divergent transitions are frequent in EG, consider:
+
+1. Increasing `adapt_delta` to 0.95 or 0.99
+2. Increasing `max_treedepth` to 12 or 15
+3. Adding stronger regularization on $\Phi$ and $\rho$
+4. Using more warmup iterations for adaptation
 :::
 
-# 6. Reproducibility
+## 9.3. Non-Centered Parameterization for Hierarchical Intercepts
+
+Both models use a non-centered parameterization for unit-level intercepts:
+
+$$
+\mu_i = \bar{\mu} + \tau_\mu \odot z_{\mu,i}, \quad z_{\mu,i} \sim \mathcal{N}(0, I_2)
+$$
+
+where $\odot$ denotes element-wise multiplication.
+
+**Benefits:**
+
+1. Decouples $\tau_\mu$ from unit-level parameters in the prior
+2. Improves sampling when $\tau_\mu$ is small or poorly identified
+3. Allows the sampler to explore the full range of $\tau_\mu$ without getting stuck
+
+**Stan implementation:**
+
+```stan
+parameters {
+  row_vector[2] mu_bar;
+  vector<lower=0>[2] tau_mu;
+  matrix[N,2] z_mu;  // Standard normal latents
+}
+
+transformed parameters {
+  matrix[N,2] mu;
+  for (i in 1:N) {
+    mu[i] = mu_bar + (to_row_vector(tau_mu) .* z_mu[i]);
+  }
+}
+```
+
+## 9.4. EG Model: Global Feasibility Bound in Multilevel Setting
+
+The EG model requires that shifted residuals have positive support for exponential likelihood evaluation. In the multilevel setting, the feasibility bound must be computed **globally** across all units:
+
+$$
+b_j = \max_{i,t} \left( -s_j \cdot \text{res}_{i,t,j} \right)
+$$
+
+where $\text{res}_{i,t,j} = Y_{i,t,j} - \mu_{i,j} - [\Phi Y_{i,t-1}]_j$ is the residual for unit $i$, time $t$, series $j$.
+
+**Key differences from single-level (Study 2):**
+
+| Aspect | Single-Level | Multilevel |
+|--------|--------------|------------|
+| Observations in max | $T - 1$ | $N \times (T - 1)$ |
+| Dependence on $\mu$ | Single intercept | All $N$ unit intercepts |
+| Posterior coupling | Moderate | Strong |
+
+**Stan implementation:**
+
+```stan
+model {
+  vector[2] b;  // Global feasibility bounds
+  
+  // Scan ALL residuals
+  {
+    row_vector[2] pred0 = mu[1] + y[1][1] * Phi_T;
+    row_vector[2] res0 = y[1][2] - pred0;
+    for (j in 1:2) b[j] = -skew_direction[j] * res0[j];
+    
+    for (i in 1:N) {
+      for (t in 2:T) {
+        row_vector[2] pred = mu[i] + y[i][t-1] * Phi_T;
+        row_vector[2] res = y[i][t] - pred;
+        for (j in 1:2) {
+          real v = -skew_direction[j] * res[j];
+          if (v > b[j]) b[j] = v;
+        }
+      }
+    }
+  }
+  
+  // sigma_exp = b + exp(eta)
+  for (j in 1:2) sigma_exp[j] = b[j] + exp(eta[j]);
+}
+```
+
+::: {.callout-important}
+## Interaction Between Hierarchy and Feasibility Bound
+
+The global max operation creates strong coupling between:
+
+1. All unit intercepts $\mu_i$ (through residuals)
+2. VAR coefficients $\Phi$ (through predictions)
+3. Marginal scale $\sigma_{\text{exp}}$ (through the bound)
+
+When $\tau_\mu$ is large, unit intercepts vary widely, pushing some residuals to extremes. This affects the bound $b$, which in turn affects the likelihood geometry. This interaction can lead to divergent transitions and requires careful tuning.
+:::
+
+## 9.5. Gaussian Copula Log-Density
+
+The Gaussian copula density implementation is identical to Studies 1–3:
+
+$$
+\log c(u, v; \rho) = -\frac{1}{2}\log(1 - \rho^2) - \frac{1}{2(1-\rho^2)}\left(z_1^2 - 2\rho z_1 z_2 + z_2^2\right) + \frac{1}{2}\left(z_1^2 + z_2^2\right)
+$$
+
+where $z_1 = \Phi^{-1}(u)$ and $z_2 = \Phi^{-1}(v)$.
+
+Boundary clamping with $\varepsilon = 10^{-9}$ prevents numerical overflow near $u = 0$ or $u = 1$.
+
+## 9.6. Reproducibility Strategy
+
+The simulation uses deterministic seeding:
+
+- **Global seed**: 2026 (Study 4)
+- **Init seeds**: Condition and replication specific
+- **Stan seeds**: Derived from condition/replication IDs
+
+Resume capability via `START_COND` and `START_REP` environment variables.
+
+# 10. Appendix: Comparison with Single-Level Studies
+
+```{r comparison_table, echo=FALSE}
+comparison <- tibble(
+  Aspect = c(
+    "Structure",
+    "Number of units",
+    "Intercepts",
+    "VAR dynamics",
+    "Copula correlation",
+    "Marginal scales",
+    "Feasibility bound (EG)",
+    "Key challenge"
+  ),
+  `Studies 1-3` = c(
+    "Single-level VAR(1)",
+    "N = 1",
+    "Fixed (μ)",
+    "Global",
+    "Global",
+    "Global",
+    "Max over T−1 residuals",
+    "Marginal/copula misspecification"
+  ),
+  `Study 4` = c(
+    "Multilevel VAR(1)",
+    "N = 40",
+    "Random (μ_i ~ N(μ̄, τ²))",
+    "Global (shared)",
+    "Global (shared)",
+    "Global (shared)",
+    "Max over N×(T−1) residuals",
+    "Hierarchy × exponential constraint"
+  )
+)
+
+kable(comparison, caption = "Comparison of single-level and multilevel study designs.")
+```
+
+# 11. Session Information
 
 ```{r session_info, echo=FALSE}
 sessionInfo()

@@ -21,6 +21,23 @@ FITS_DIR <- file.path(BASE_DIR, "fits")
 RES_DIR <- file.path(BASE_DIR, "results")
 dir.create(RES_DIR, FALSE, TRUE)
 
+# Optional design filter: if the design file exists, restrict analysis
+# to those condition_ids. This prevents stale fits from prior designs
+# (e.g., after changing the number of conditions) from contaminating
+# the summaries.
+design_file <- file.path(DATA_DIR, "sim_conditions_ml.rds")
+allowed_cids <- NULL
+if (file.exists(design_file)) {
+  des <- try(readRDS(design_file), silent = TRUE)
+  if (!inherits(des, "try-error") && is.data.frame(des) && "condition_id" %in% names(des)) {
+    allowed_cids <- sort(unique(as.integer(des$condition_id)))
+    allowed_cids <- allowed_cids[is.finite(allowed_cids)]
+    if (length(allowed_cids)) {
+      message("Design filter enabled for analysis: condition_id ∈ {", paste(allowed_cids, collapse = ", "), "}")
+    }
+  }
+}
+
 safe_read <- function(p) tryCatch(readRDS(p), error = function(e) e)
 `%||%` <- function(a, b) if (!is.null(a)) a else b
 
@@ -60,6 +77,22 @@ fits <- list.files(FITS_DIR, "^fit_(EG_MLmin|NG_MLmin)_cond\\d+_rep\\d+\\.rds$",
 if (!length(fits)) {
   message("No ML fit files in ", FITS_DIR)
   quit(status = 1)
+}
+
+# Apply design filter (if available) to avoid summarising stale fits
+if (!is.null(allowed_cids) && length(allowed_cids)) {
+  mm <- stringr::str_match(basename(fits), "fit_(EG_MLmin|NG_MLmin)_cond(\\d+)_rep(\\d+)\\.rds")
+  cid_filter <- as.integer(mm[, 3])
+  keep <- !is.na(cid_filter) & cid_filter %in% allowed_cids
+  dropped <- sum(!keep)
+  if (dropped > 0) {
+    message("Filtering out ", dropped, " fit files not in current design.")
+  }
+  fits <- fits[keep]
+  if (!length(fits)) {
+    message("No ML fit files after applying design filter.")
+    quit(status = 1)
+  }
 }
 
 sim_env <- new.env()
@@ -121,10 +154,10 @@ for (k in seq_along(fits)) {
     if (inherits(s, "try-error")) {
       return(NULL)
     }
-    df <- s |>
-      as.data.frame(optional = TRUE) |>
+    df <- s %>%
+      as.data.frame(optional = TRUE) %>%
       tibble::rownames_to_column("param")
-    df |> filter(param %in% pars)
+    df %>% filter(param %in% pars)
   }
 
   # collect global params (phi, rho, sigma/sigma_exp)
@@ -135,7 +168,7 @@ for (k in seq_along(fits)) {
   )
   sm_glob <- if (stat == "ok") pull_sum(fit, want_glob) else NULL
   tab_glob <- if (!is.null(sm_glob)) {
-    sm_glob |>
+    sm_glob %>%
       mutate(
         truth = truth_global[param],
         bias = ifelse(is.na(truth), NA_real_, mean - truth),
@@ -143,7 +176,7 @@ for (k in seq_along(fits)) {
         cover95 = ifelse(is.na(truth), NA, (`2.5%` <= truth & `97.5%` >= truth)),
         model = model, condition_id = cid, rep_id = rid,
         n_div = n_div, max_rhat = rhat, status = stat
-      ) |>
+      ) %>%
       select(model, condition_id, rep_id, param,
         post_mean = mean, post_sd = sd, l95 = `2.5%`, u95 = `97.5%`,
         truth, bias, rel_bias, cover95, n_div, max_rhat, status
@@ -161,18 +194,18 @@ for (k in seq_along(fits)) {
       idx <- stringr::str_match(sm_mu$param, "^mu\\[(\\d+),(\\d+)\\]$")
       sm_mu$unit <- as.integer(idx[, 2])
       sm_mu$j <- as.integer(idx[, 3])
-      sm_mu <- sm_mu |> filter(!is.na(unit), !is.na(j))
+      sm_mu <- sm_mu %>% filter(!is.na(unit), !is.na(j))
       sm_mu$truth <- mu_true[cbind(sm_mu$unit, sm_mu$j)]
       sm_mu$parnm <- ifelse(sm_mu$j == 1, "mu[1]", "mu[2]")
 
-      tab_mu <- sm_mu |>
+      tab_mu <- sm_mu %>%
         mutate(
           bias = ifelse(is.na(truth), NA_real_, mean - truth),
           rel_bias = ifelse(is.na(truth), NA_real_, ifelse(abs(truth) < .Machine$double.eps, bias, bias / abs(truth))),
           cover95 = ifelse(is.na(truth), NA, (`2.5%` <= truth & `97.5%` >= truth)),
           model = model, condition_id = cid, rep_id = rid,
           n_div = n_div, max_rhat = rhat, status = stat
-        ) |>
+        ) %>%
         transmute(model, condition_id, rep_id, unit,
           param = parnm,
           post_mean = mean, post_sd = sd, l95 = `2.5%`, u95 = `97.5%`,
@@ -188,21 +221,21 @@ for (k in seq_along(fits)) {
     sm_bar <- pull_sum(fit, c("mu_bar[1]", "mu_bar[2]"))
     if (!is.null(sm_bar) && nrow(sm_bar) > 0) {
       # FIX: Use explicit index matching instead of positional assignment
-      sm_bar <- sm_bar |>
+      sm_bar <- sm_bar %>%
         mutate(
           idx = as.integer(str_match(param, "^mu_bar\\[(\\d+)\\]$")[, 2]),
           truth = 0  # mu_bar truth is always 0 for both indices
-        ) |>
+        ) %>%
         filter(!is.na(idx))
       
-      tb <- sm_bar |>
+      tb <- sm_bar %>%
         mutate(
           bias = mean - truth,
           rel_bias = ifelse(abs(truth) < .Machine$double.eps, bias, bias / abs(truth)),
           cover95 = (`2.5%` <= truth & `97.5%` >= truth),
           model = model, condition_id = cid, rep_id = rid, 
           n_div = n_div, max_rhat = rhat, status = stat
-        ) |>
+        ) %>%
         select(model, condition_id, rep_id, param,
           post_mean = mean, post_sd = sd, l95 = `2.5%`, u95 = `97.5%`,
           truth, bias, rel_bias, cover95, n_div, max_rhat, status
@@ -214,23 +247,23 @@ for (k in seq_along(fits)) {
     sm_tau <- pull_sum(fit, c("tau_mu[1]", "tau_mu[2]"))
     if (!is.null(sm_tau) && nrow(sm_tau) > 0) {
       # FIX: Use explicit index matching instead of positional assignment
-      sm_tau <- sm_tau |>
+      sm_tau <- sm_tau %>%
         mutate(
           idx = as.integer(str_match(param, "^tau_mu\\[(\\d+)\\]$")[, 2])
-        ) |>
-        filter(!is.na(idx)) |>
+        ) %>%
+        filter(!is.na(idx)) %>%
         mutate(
           truth = tau_true[idx]  # Explicit index-based lookup
         )
       
-      tb <- sm_tau |>
+      tb <- sm_tau %>%
         mutate(
           bias = mean - truth,
           rel_bias = ifelse(abs(truth) < .Machine$double.eps, bias, bias / abs(truth)),
           cover95 = (`2.5%` <= truth & `97.5%` >= truth),
           model = model, condition_id = cid, rep_id = rid, 
           n_div = n_div, max_rhat = rhat, status = stat
-        ) |>
+        ) %>%
         select(model, condition_id, rep_id, param,
           post_mean = mean, post_sd = sd, l95 = `2.5%`, u95 = `97.5%`,
           truth, bias, rel_bias, cover95, n_div, max_rhat, status
@@ -260,10 +293,10 @@ message(sprintf("sigma_exp parameters recovered: %d rows", sigma_exp_count))
 
 # aggregate to condition level
 good <- rep_tbl$status == "ok" & !is.na(rep_tbl$param)
-cond_tbl <- rep_tbl |>
-  filter(good) |>
-  mutate(is_unit = !is.na(unit)) |>
-  group_by(condition_id, model, param) |>
+cond_tbl <- rep_tbl %>%
+  filter(good) %>%
+  mutate(is_unit = !is.na(unit)) %>%
+  group_by(condition_id, model, param) %>%
   summarise(
     N_valid = n(),
     N_truth_avail = sum(!is.na(truth)),
@@ -274,7 +307,7 @@ cond_tbl <- rep_tbl |>
     emp_sd = sd(post_mean, na.rm = TRUE),
     sd_bias = mean_post_sd - emp_sd,
     .groups = "drop"
-  ) |>
+  ) %>%
   mutate(across(where(is.numeric), ~ ifelse(is.nan(.), NA_real_, .)))
 
 out_cond <- file.path(RES_DIR, "summary_conditions_ml.csv")

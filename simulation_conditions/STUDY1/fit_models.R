@@ -148,7 +148,7 @@ fit_var1_copula_models <- function(data_dir,
             models[[code]], # Available because mclapply forks (shares memory)
             data = sdat,
             chains = chains, iter = iter, warmup = warmup,
-            thin = 2,
+            thin = 1,
             seed = seed_stan,
             init = inits,
             control = list(adapt_delta = adapt_delta, max_treedepth = max_treedepth),

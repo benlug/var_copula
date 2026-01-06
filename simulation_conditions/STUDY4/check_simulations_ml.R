@@ -58,7 +58,12 @@ run_post_sim_checks_var1_ml <- function(data_dir, checks_dir, n_units_to_plot = 
       Phi <- dat$phi_matrix
       mu_mat <- dat$true_params$mu_mat
       skew_dir <- dat$true_params$skew_dir %||% c(1, 1)
-      cond_lbl <- sprintf("Cond %03d (ML-Exponential)", dat$condition_id)
+      m1 <- dat$true_params$margin1 %||% list(type = "unknown")
+      dist_lab <- as.character(m1$type %||% "unknown")
+      if (tolower(dist_lab) == "gamma" && is.finite(m1$shape %||% NA_real_)) {
+        dist_lab <- sprintf("gamma(k=%.2f)", as.numeric(m1$shape))
+      }
+      cond_lbl <- sprintf("Cond %03d (ML-%s)", dat$condition_id, dist_lab)
       # choose a few units
       units <- sort(sample(unique(dat$data$i), min(n_units_to_plot, dat$N)))
       for (u in units) {

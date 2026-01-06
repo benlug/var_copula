@@ -105,23 +105,23 @@ $$
 yields $\mathbb{E}[Z] = 0$ and $\text{Var}(Z) = 1$. Mirroring ($-Z$) produces left-skewed innovations. For the joint density via Gaussian copula, see Study 1, Section 1.1.
 :::
 
-::: {.callout-important}
-## Copula Sign Under Mirroring
+<!-- ::: {.callout-important} -->
+<!-- ## Copula Sign Under Mirroring -->
 
-Left-skew Exponential margins are produced by mirroring standardized Exponential innovations (multiplying by $-1$). For a Gaussian copula, mirroring exactly one margin corresponds to the transformation $u \mapsto 1-u$ on the PIT scale. Since $\Phi^{-1}(1-u) = -\Phi^{-1}(u)$, this flips the sign of the latent Gaussian score and therefore maps
+<!-- Left-skew Exponential margins are produced by mirroring standardized Exponential innovations (multiplying by $-1$). For a Gaussian copula, mirroring exactly one margin corresponds to the transformation $u \mapsto 1-u$ on the PIT scale. Since $\Phi^{-1}(1-u) = -\Phi^{-1}(u)$, this flips the sign of the latent Gaussian score and therefore maps -->
 
-$$
-\rho \;\mapsto\; -\rho.
-$$
+<!-- $$ -->
+<!-- \rho \;\mapsto\; -\rho. -->
+<!-- $$ -->
 
-Accordingly, in mixed-direction settings (e.g., $+-$), the effective copula correlation associated with the observed marginals is
+<!-- Accordingly, in mixed-direction settings (e.g., $+-$), the effective copula correlation associated with the observed marginals is -->
 
-$$
-\rho_{\mathrm{eff}} \;=\; s_1 s_2\,\rho,\qquad s_j\in\{+1,-1\},
-$$
+<!-- $$ -->
+<!-- \rho_{\mathrm{eff}} \;=\; s_1 s_2\,\rho,\qquad s_j\in\{+1,-1\}, -->
+<!-- $$ -->
 
-where $s_j=-1$ indicates a mirrored (left-skew) margin.
-:::
+<!-- where $s_j=-1$ indicates a mirrored (left-skew) margin. -->
+<!-- ::: -->
 
 ## 1.2. Simulation Design
 
@@ -389,7 +389,7 @@ ggplot(mcmc_summary, aes(x = T, y = Count, fill = mcmc_status)) +
   scale_fill_manual(values = c("Clean" = "#4daf4a", "Problematic" = "#ff7f00", "Failed/Error" = "#e41a1c"))
 ```
 
-**Interpretation:** Both NG and EG fits are uniformly Clean across the entire design, with zero post-warmup divergent transitions. This excellent computational behavior contrasts with the SG model under extremeCHI in Study 1, which exhibited frequent divergences. The absence of sampling difficulties here demonstrates that correctly specifying the marginal distribution (EG with Exponential margins) avoids the posterior geometry challenges that arose from model misspecification.
+Both NG and EG models exhibit uniformly clean fits across the entire design, with almost no post-warmup divergent transitions. This favorable computational performance contrasts with the SG model under extremeCHI in Study 1, which experienced frequent divergences. The absence of sampling difficulties in the current analysis indicates that correct specification of the marginal distribution, as in EG, mitigates the posterior geometry challenges associated with model misspecification.
 
 ```{r mcmc_divergences_plot, fig.height=5, fig.width=10}
 #| label: mcmc_divergences_plot
@@ -821,17 +821,9 @@ All models were fitted using the No-U-Turn Sampler (NUTS) implemented in Stan vi
 | Total iterations | 4,000 | Iterations per chain (including warmup) |
 | Warmup iterations | 2,000 | Discarded adaptation period |
 | Post-warmup draws | 2,000 | Retained samples per chain |
-| `adapt_delta` | 0.995 | Target acceptance probability |
+| `adapt_delta` | 0.95 | Target acceptance probability |
 | `max_treedepth` | 15 | Maximum tree depth for NUTS |
 | Parallelization | Outer loop | Replications parallelized; chains run sequentially |
-
-::: {.callout-note}
-## Higher adapt_delta Than Study 1
-
-Study 2 uses `adapt_delta = 0.995` compared to 0.95 in Study 1. This higher value was chosen because the EG model's feasibility-bound reparameterization creates regions where the posterior density changes rapidly near the boundary. The elevated target acceptance rate reduces step sizes in these regions, preventing divergent transitions.
-
-Despite this challenging geometry, **zero divergent transitions** were observed across all 14,400 fits (7,200 per model), demonstrating that the reparameterization strategy (Section 6.4) successfully regularizes the posterior.
-:::
 
 ## 6.3. Gaussian Copula Log-Density
 
@@ -859,8 +851,6 @@ This prevents numerical overflow when $\Phi^{-1}(u)$ is evaluated near 0 or 1.
 
 The Exponential–Gaussian model requires that the shifted residuals have positive support. This section documents the reparameterization strategy that ensures feasibility while maintaining good posterior geometry.
 
-### The Support Constraint Problem
-
 For an Exponential marginal with scale $\sigma_{\mathrm{exp}}$, the likelihood requires:
 
 $$
@@ -868,8 +858,6 @@ x_{\text{shifted},t} = \sigma_{\mathrm{exp}} + s \cdot \text{res}_t > 0, \quad \
 $$
 
 where $s \in \{+1, -1\}$ is the skew direction (+1 for right-skewed, −1 for left-skewed/mirrored). Naively parameterizing $\sigma_{\mathrm{exp}} > 0$ can lead to divergent transitions when the sampler proposes values that violate this constraint for some $t$.
-
-### Data-Dependent Feasibility Bound
 
 Define the feasibility bound:
 
@@ -879,7 +867,7 @@ $$
 
 This is the minimum value of $\sigma_{\mathrm{exp},i}$ such that $x_{\text{shifted},t,i} > 0$ for all observations. Any $\sigma_{\mathrm{exp},i} > b_i$ is guaranteed to satisfy the support constraint.
 
-### The $\eta$ Reparameterization
+### $\eta$ Reparameterization
 
 Rather than estimating $\sigma_{\mathrm{exp}}$ directly, the EG model estimates an unconstrained parameter $\eta \in \mathbb{R}$ and transforms:
 
@@ -888,12 +876,6 @@ $$
 $$
 
 where $\exp(\eta) > 0$ represents the "slack" above the feasibility bound.
-
-**Key benefits:**
-
-1. **Automatic feasibility**: $\sigma_{\mathrm{exp}} > b$ by construction for any $\eta \in \mathbb{R}$
-2. **Smooth geometry**: No hard boundaries for the sampler to navigate
-3. **Well-defined gradients**: The transformation is smooth and invertible
 
 ### Induced Prior via Change-of-Variables
 
@@ -909,17 +891,17 @@ $$
 \log p(\sigma_{\mathrm{exp}}) + \log\left|\frac{d\sigma_{\mathrm{exp}}}{d\eta}\right| = \text{lognormal\_lpdf}(\sigma_{\mathrm{exp}} \mid 0, 0.5) + \eta
 $$
 
-::: {.callout-important}
-## No Additional Prior on $\eta$
+<!-- ::: {.callout-important} -->
+<!-- ## No Additional Prior on $\eta$ -->
 
-The Stan implementation explicitly avoids placing an independent prior on $\eta$. Doing so would double-regularize the scale parameter and conflict with the intended $\text{Log-Normal}(0, 0.5)$ prior on $\sigma_{\mathrm{exp}}$, potentially worsening posterior geometry and introducing bias.
-:::
+<!-- The Stan implementation explicitly avoids placing an independent prior on $\eta$. Doing so would double-regularize the scale parameter and conflict with the intended $\text{Log-Normal}(0, 0.5)$ prior on $\sigma_{\mathrm{exp}}$, potentially worsening posterior geometry and introducing bias. -->
+<!-- ::: -->
 
 ### Stan Implementation
 
 ```stan
 model {
-  // Compute feasibility bounds: b_i = max_t(-s_i * res_{t,i})
+  // compute feasibility bounds: b_i = max_t(-s_i * res_{t,i})
   for (i in 1:2) {
     real m = -skew_direction[i] * residuals[1, i];
     for (t in 2:(T-1)) {
@@ -928,18 +910,18 @@ model {
     b[i] = m;
   }
 
-  // Reparameterized sigma: always feasible
+  // reparameterized sigma: always feasible
   for (i in 1:2) {
     sigma_exp[i] = b[i] + exp(eta[i]);
   }
   rate_exp = 1.0 ./ sigma_exp;
 
-  // Induced prior on sigma_exp via change-of-variables
+  // induced prior on sigma_exp via change-of-variables
   for (i in 1:2) {
     target += lognormal_lpdf(sigma_exp[i] | 0, 0.5) + eta[i];
   }
   
-  // Likelihood contributions...
+  // likelihood contributions ...
 }
 ```
 
@@ -973,78 +955,22 @@ The EG model applies the CDF flip after computing the exponential CDF:
 
 ```stan
 for (i in 1:2) {
-  // Shift residual to positive support
+  // shift residual to positive support
   x_shifted[i] = sigma_exp[i] + skew_direction[i] * res[i];
   target += exponential_lpdf(x_shifted[i] | rate_exp[i]);
   
-  // Compute PIT
+  // compute PIT
   u_vec[i] = exponential_cdf(x_shifted[i], rate_exp[i]);
   
-  // Flip CDF for left-skewed (mirrored) margins
+  // flip CDF for left-skewed (mirrored) margins
   if (skew_direction[i] < 0) u_vec[i] = 1.0 - u_vec[i];
 }
 
 target += gaussian_copula_ld(u_vec[1], u_vec[2], rho);
 ```
 
-::: {.callout-note}
-## Effective Correlation in Evaluation
+<!-- ::: {.callout-note} -->
+<!-- ## Effective Correlation in Evaluation -->
 
-The analysis script computes $\rho_{\mathrm{eff}} = s_1 s_2 \rho$ where $s_j = -1$ if margin $j$ is mirrored. Bias and coverage metrics for $\rho$ are evaluated against $\rho_{\mathrm{eff}}$, not the input $\rho$, ensuring correct interpretation in mixed-direction cells.
-:::
-
-## 6.6. Reproducibility Strategy
-
-The simulation study employs deterministic seeding to ensure full reproducibility.
-
-### Data Generation Seeds
-
-Each simulated dataset receives a unique seed:
-
-$$
-\text{seed}_{\text{data}} = \text{seed\_base} + \text{condition\_id} \times 100000 + \text{rep\_id}
-$$
-
-with $\text{seed\_base} = 2026$ for Study 2. The larger multiplier (100,000 vs 10,000 in Study 1) provides wider separation between condition seed ranges.
-
-### MCMC Initialization Seeds
-
-The EG model uses data-driven initialization based on OLS pre-fits:
-
-1. Fit OLS: $y_{1,t} \sim y_{1,t-1} + y_{2,t-1}$ and $y_{2,t} \sim y_{1,t-1} + y_{2,t-1}$
-2. Extract coefficients as initial values for $\mu$ and $\Phi$
-3. Compute feasibility bounds $b$ from OLS residuals
-4. Set $\eta = \log(0.2)$ (slack ≈ 0.2) as default
-
-For NG, standard random initialization is used with seed:
-
-$$
-\text{seed}_{\text{init}} = \text{seed\_base}_R + \text{seed\_key}(\text{cid}, \text{rid}, \text{chain})
-$$
-
-where $\text{seed\_key}(\text{cid}, \text{rid}, \text{chain}) = \text{cid} \times 100000 + \text{rid} \times 10 + \text{chain}$.
-
-### Stan Sampler Seeds
-
-$$
-\text{seed}_{\text{Stan}} = \text{seed\_base}_{\text{Stan}} + \text{seed\_key}(\text{cid}, \text{rid}, 0)
-$$
-
-with $\text{seed\_base}_{\text{Stan}} = 5 \times 10^6$.
-
-::: {.callout-note}
-## Resume Capability
-
-The pipeline supports resumption via environment variables `START_COND` and `START_REP`. Because seeds are deterministic functions of (condition, replication), resuming from any point produces identical results to running the full pipeline.
-:::
-
-### Initialization Sidecar Files
-
-For each fitted model, the pipeline optionally saves a "sidecar" file containing:
-
-- All random seeds used (data, init, Stan)
-- Exact initial values for each chain
-- Timestamp and metadata
-
-This enables exact reproduction of any individual fit.
-
+<!-- The analysis script computes $\rho_{\mathrm{eff}} = s_1 s_2 \rho$ where $s_j = -1$ if margin $j$ is mirrored. Bias and coverage metrics for $\rho$ are evaluated against $\rho_{\mathrm{eff}}$, not the input $\rho$, ensuring correct interpretation in mixed-direction cells. -->
+<!-- ::: -->

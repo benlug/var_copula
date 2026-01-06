@@ -155,7 +155,7 @@ if (RUN_FITTING) {
       iter = 4000,
       warmup = 2000,
       # High settings are important due to the boundary constraints of the exponential model
-      adapt_delta = 0.995,
+      adapt_delta = 0.95,
       max_treedepth = 15,
       cores_outer = NUM_CORES_OUT,
       start_condition = START_COND,

@@ -1,0 +1,929 @@
+---
+title: "Study 3: VAR(1) with Normal Margins — Gaussian vs. Clayton Copula"
+format:
+  pdf:
+    toc: true
+    toc_depth: 3
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| echo: false
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(readr)
+  library(ggplot2)
+  library(stringr)
+  library(knitr)
+  library(RColorBrewer)
+
+  if (!requireNamespace("patchwork", quietly = TRUE)) {
+    message("Package 'patchwork' is recommended for arranging plots.")
+  } else {
+    library(patchwork)
+  }
+})
+
+# ---- paths ----
+DATA_DIR   <- file.path("data")
+RES_DIR    <- file.path("results")
+EXPORT_DIR <- file.path(RES_DIR, "exported_tables_s3")
+dir.create(EXPORT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+files <- list(
+  cond   = file.path(RES_DIR, "summary_conditions.csv"),
+  rep    = file.path(RES_DIR, "summary_replications.csv"),
+  design = file.path(DATA_DIR, "sim_conditions.rds")
+)
+
+if (!all(file.exists(unlist(files)))) {
+  stop(
+    "Missing required input files. Expected:\n",
+    " - ", files$rep, "\n",
+    " - ", files$cond, "\n",
+    " - ", files$design, "\n",
+    "Run the Study 3 pipeline and analysis_singlelevel.R first."
+  )
+}
+```
+
+# 0. Summary
+
+## 0.1 Computational Stability
+
+Both models exhibit excellent computational stability across all simulation conditions. The Normal-Gaussian (NG) model and the Normal-Clayton (NC) model both show no post-warmup divergent transitions and max $\hat{R} \leq 1.01$ in all replications. This stands in contrast to Studies 1-2 where some model-DGP combinations exhibited divergences.
+
+## 0.2 Model Performance Under Clayton Copula DGP
+
+**Normal-Clayton (NC):** The correctly specified model is approximately unbiased for all parameters including the copula parameter $\theta$. Coverage is close to nominal (0.95) across conditions, with slight under-coverage for $\theta$ at higher dependence levels ($\theta \geq 4$) in small samples.
+
+**Normal-Gaussian (NG):** The misspecified model recovers the VAR dynamics ($\Phi$) and intercepts ($\mu$) without substantial bias, demonstrating robustness of marginal parameter inference to copula misspecification. The copula parameter $\rho$ has no ground truth under the Clayton DGP, but posterior means increase monotonically with $\theta$, indicating the Gaussian copula "absorbs" the Clayton dependence structure.
+
+## 0.3 Key Insights
+
+1. **Copula misspecification does not propagate to marginal parameters**: Under normal margins, the NG model recovers $\mu$, $\Phi$, and $\sigma$ with similar accuracy to the correctly specified NC model.
+
+2. **The Clayton copula captures asymmetric tail dependence**: Unlike the symmetric Gaussian copula, the Clayton copula concentrates dependence in the lower tail. This feature cannot be captured by the NG model's $\rho$ parameter.
+
+3. **Kendall's $\tau$ provides a common dependence scale**: The relationship $\tau = \theta/(\theta+2)$ maps Clayton $\theta$ to the $[0,1]$ scale, facilitating comparison with Gaussian $\rho$ (where $\tau = (2/\pi)\arcsin(\rho)$).
+
+# 1. Introduction
+
+This simulation study compares two Bayesian VAR(1) models under a Clayton copula DGP with normal margins: a Normal-Gaussian (NG) model (misspecified copula) and a Normal-Clayton (NC) model (correctly specified). Unlike Studies 1-2, which examined marginal distribution misspecification, Study 3 focuses on **copula misspecification** while keeping margins correctly specified in both models.
+
+## 1.1. Data Generating Process (DGP)
+
+The DGP follows the same VAR(1) structure as Studies 1-2:
+
+$$
+Y_t = \mu + \Phi Y_{t-1} + \varepsilon_t, \qquad t = 2, \ldots, T,
+$$
+
+with $\mu = \mathbf{0}$. Innovations $\varepsilon_t = (\varepsilon_{1t}, \varepsilon_{2t})$ have standard normal margins (mean 0, variance 1) coupled through a **Clayton copula** with parameter $\theta > 0$.
+
+::: {.callout-note}
+## Clayton Copula
+
+The Clayton copula is an Archimedean copula with CDF:
+
+$$
+C(u, v; \theta) = \left(u^{-\theta} + v^{-\theta} - 1\right)^{-1/\theta}, \qquad \theta > 0
+$$
+
+It exhibits **lower-tail dependence**: extreme low values co-occur more frequently than under a Gaussian copula. The lower-tail dependence coefficient is $\lambda_L = 2^{-1/\theta}$.
+:::
+
+::: {.callout-important}
+## Kendall's Tau Relationship
+
+For the Clayton copula, Kendall's $\tau$ relates to $\theta$ via:
+
+$$
+\tau = \frac{\theta}{\theta + 2}
+$$
+
+This provides a monotone mapping between $\theta \in (0, \infty)$ and $\tau \in (0, 1)$.
+:::
+
+```{r kendall_tau_table}
+#| label: kendall_tau_table
+#| echo: false
+
+kendall_df <- data.frame(
+  theta = c(0.5, 1.0, 2.0, 4.0, 8.0),
+  tau = c(0.20, 0.33, 0.50, 0.67, 0.80)
+)
+
+kable(kendall_df, 
+      col.names = c("theta", "tau"),
+      caption = "Kendall's tau values for Clayton copula design parameters.")
+```
+
+## 1.2. Simulation Design
+
+The study employs a factorial design crossing three factors.
+
+```{r design_table}
+#| label: design_table
+#| echo: false
+
+design_summary <- data.frame(
+  Factor = c(
+    "Time Series Length (T)",
+    "Clayton Parameter (theta)",
+    "VAR Parameters (Phi)",
+    "Margins"
+  ),
+  Levels = c(
+    "50, 100, 200",
+    "0.5, 1.0, 2.0, 4.0, 8.0",
+    "Set A: phi_11=phi_22=0.40, phi_12=phi_21=0.10",
+    "Standard Normal (mean 0, variance 1)"
+  )
+)
+
+kable(design_summary, caption = "Summary of the Simulation Design Factors.")
+```
+
+::: {.callout-note}
+## Design Simplification
+
+Study 3 uses only VAR Set A (symmetric) and excludes skewness direction factors since all margins are symmetric normal. This yields $3 \times 5 = 15$ conditions with 200 replications each, for a total of 3,000 simulated datasets.
+:::
+
+## 1.3. True Parameter Values
+
+```{r true_params_table}
+#| label: true_params_table
+#| echo: false
+
+true_params <- data.frame(
+  Parameter = c(
+    "mu_1, mu_2",
+    "phi_11, phi_22",
+    "phi_12, phi_21",
+    "sigma_1, sigma_2",
+    "theta (NC model)",
+    "rho (NG model)"
+  ),
+  True_Value = c(
+    "0, 0",
+    "0.40",
+    "0.10",
+    "1.0, 1.0",
+    "Design value (0.5, 1, 2, 4, or 8)",
+    "Undefined (copula misspecified)"
+  ),
+  Notes = c(
+    "Innovations are mean-zero",
+    "Diagonal AR coefficients",
+    "Cross-effects (symmetric)",
+    "Innovations are unit-variance",
+    "Clayton copula parameter",
+    "No ground truth under Clayton DGP"
+  )
+)
+
+kable(true_params, 
+      col.names = c("Parameter", "True Value", "Notes"),
+      caption = "True Parameter Values Used in the Data Generating Process.")
+```
+
+::: {.callout-important}
+## No Ground Truth for rho in NG Model
+
+Under the Clayton copula DGP, the Gaussian copula parameter $\rho$ has no well-defined ground truth. The NG model is misspecified for the copula structure, so bias and coverage metrics are **not computed** for $\rho$. Instead, we report posterior means descriptively to show how the Gaussian copula absorbs Clayton dependence.
+:::
+
+## 1.4. Visual Check: Clayton Copula Dependence Structure
+
+```{r dgp_copula_viz, fig.width=12, fig.height=5}
+#| label: dgp_copula_viz
+#| echo: false
+
+set.seed(42)
+N_draw <- 2000
+
+# Generate Clayton copula samples for different theta values
+library(copula)
+
+theta_vals <- c(0.5, 2, 8)
+plot_data <- lapply(theta_vals, function(th) {
+  cop <- claytonCopula(th, dim = 2)
+  u <- rCopula(N_draw, cop)
+  # Transform to normal margins
+  z <- cbind(qnorm(u[,1]), qnorm(u[,2]))
+  data.frame(
+    z1 = z[,1],
+    z2 = z[,2],
+    theta = paste0("theta = ", th, " (tau = ", round(th/(th+2), 2), ")")
+  )
+})
+plot_df <- do.call(rbind, plot_data)
+plot_df$theta <- factor(plot_df$theta, levels = unique(plot_df$theta))
+
+ggplot(plot_df, aes(x = z1, y = z2)) +
+  geom_point(alpha = 0.3, size = 0.8) +
+  facet_wrap(~ theta, ncol = 3) +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "Clayton copula with normal margins: lower-tail dependence increases with theta",
+    x = expression(epsilon[1]),
+    y = expression(epsilon[2])
+  ) +
+  coord_fixed()
+```
+
+**Interpretation.** The Clayton copula induces asymmetric dependence concentrated in the lower-left tail. As $\theta$ increases, the clustering of extreme negative values becomes more pronounced. This lower-tail dependence cannot be captured by a symmetric Gaussian copula.
+
+# 2. Data Loading and Preparation
+
+```{r data_prep}
+#| label: data_prep
+#| echo: false
+
+# ---- design grid ----
+design <- readRDS(files$design)
+
+# ---- load results ----
+cond_raw <- read_csv(files$cond, show_col_types = FALSE)
+rep_raw  <- read_csv(files$rep, show_col_types = FALSE)
+
+# attach design info
+design_min <- design |>
+  dplyr::select(condition_id, T, theta, VARset, direction)
+
+cond_raw <- cond_raw |>
+  left_join(design_min, by = "condition_id")
+
+rep_raw <- rep_raw |>
+  filter(!is.na(param)) |>
+  left_join(design_min, by = "condition_id")
+
+# keep only NG and NC
+keep_models <- c("NG", "NC")
+cond_raw <- cond_raw |> filter(model %in% keep_models)
+rep_raw  <- rep_raw  |> filter(model %in% keep_models)
+
+# parameter order
+param_levels <- c(
+  "theta",
+  "rho",
+  "sigma[1]", "sigma[2]",
+  "mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22"
+)
+
+# clean labels and factors
+prep_data <- function(df) {
+  existing_params <- intersect(param_levels, unique(df$param))
+  
+  df |>
+    mutate(
+      param     = factor(param, levels = existing_params),
+      T         = factor(T),
+      theta_val = theta,
+      theta     = factor(theta, levels = sort(unique(theta))),
+      VARset    = factor(VARset, levels = sort(unique(VARset))),
+      Model     = case_when(
+        model == "NG" ~ "Normal-Gaussian (NG)",
+        model == "NC" ~ "Normal-Clayton (NC)"
+      ),
+      Model = factor(Model, levels = c("Normal-Gaussian (NG)", "Normal-Clayton (NC)"))
+    )
+}
+
+cond   <- prep_data(cond_raw) |>
+  mutate(RMSE = sqrt(mean_bias^2 + coalesce(emp_sd^2, 0)))
+rep_df <- prep_data(rep_raw)
+
+core_params <- c("mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22")
+```
+
+## 2.1. MCMC Classification and Overview
+
+We classify runs based on MCMC diagnostics ($\hat{R}$ and divergent transitions) using the same criteria as Studies 1-2:
+
+- **Clean**: $\hat{R} \leq 1.01$ and no post-warmup divergences.
+- **Problematic**: $\hat{R} > 1.01$ or at least one divergence.
+- **Failed/Error**: Non-OK status or missing diagnostics.
+
+```{r classify_mcmc}
+#| label: classify_mcmc
+#| echo: false
+
+RHAT_THRESHOLD <- 1.01
+
+rep_df <- rep_df |>
+  mutate(
+    n_div_clean = ifelse(is.na(n_div), 0, n_div),
+    mcmc_status = case_when(
+      is.na(max_rhat) | status != "ok" ~ "Failed/Error",
+      max_rhat > RHAT_THRESHOLD | n_div_clean > 0 ~ "Problematic",
+      TRUE ~ "Clean"
+    ),
+    mcmc_status = factor(mcmc_status, levels = c("Clean", "Problematic", "Failed/Error"))
+  )
+```
+
+```{r mcmc_status_plot, fig.height=6, fig.width=12}
+#| label: mcmc_status_plot
+#| echo: false
+
+mcmc_summary <- rep_df |>
+  distinct(condition_id, rep_id, Model, mcmc_status, T, theta) |>
+  group_by(Model, theta, T, mcmc_status) |>
+  summarise(Count = n(), .groups = "drop")
+
+ggplot(mcmc_summary, aes(x = T, y = Count, fill = mcmc_status)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(Model ~ theta, labeller = label_both) +
+  labs(
+    x = "Time Series Length (T)",
+    y = "Number of Replications",
+    fill = "MCMC Status",
+    title = "MCMC convergence status by model (Study 3)"
+  ) +
+  theme_bw(base_size = 12) +
+  scale_fill_manual(values = c("Clean" = "#4daf4a", "Problematic" = "#ff7f00", "Failed/Error" = "#e41a1c"))
+```
+
+**Interpretation.** Both NG and NC fits are uniformly Clean across the entire design, with zero post-warmup divergent transitions. This excellent computational behavior demonstrates that both models sample efficiently under the Clayton DGP with normal margins.
+
+```{r divergence_table}
+#| label: divergence_table
+#| echo: false
+
+div_summary <- rep_df |>
+  filter(param == "phi11") |>
+  distinct(condition_id, rep_id, Model, T, n_div_clean) |>
+  group_by(Model, T) |>
+  summarise(
+    N_Runs = n(),
+    Total_Divergences = sum(n_div_clean),
+    .groups = "drop"
+  )
+
+kable(div_summary, 
+      col.names = c("Model", "T", "N Runs", "Total Divergences"),
+      caption = "Divergence summary: All runs have zero post-warmup divergent transitions.")
+```
+
+# 3. Helper Functions
+
+```{r helpers}
+#| label: helpers
+#| echo: false
+
+theme_standard <- theme_bw(base_size = 12)
+dodge_width    <- 0.5
+model_colors   <- c("Normal-Gaussian (NG)" = "#377eb8",
+                    "Normal-Clayton (NC)"  = "#4daf4a")
+
+plot_metric <- function(data, metric_col, ylab, title, params = NULL, 
+                        use_free_y = FALSE, ylims = NULL) {
+  
+  if (!is.null(params)) {
+    data <- data |> filter(param %in% params)
+  }
+  
+  data_filtered <- data |>
+    filter(
+      !is.na(.data[[metric_col]]),
+      !is.na(T),
+      !is.na(param),
+      !is.na(theta)
+    ) |>
+    droplevels()
+  
+  if (nrow(data_filtered) == 0) return(NULL)
+  
+  p <- ggplot(data_filtered, aes(x = T, y = .data[[metric_col]], 
+                                  color = Model, group = Model)) +
+    geom_line(position = position_dodge(dodge_width), linewidth = 1) +
+    geom_point(position = position_dodge(dodge_width), size = 2.5) +
+    facet_grid(param ~ theta, labeller = label_both,
+               scales = ifelse(use_free_y, "free_y", "fixed")) +
+    theme_standard +
+    scale_color_manual(values = model_colors) +
+    labs(title = title, y = ylab, x = "Time Series Length (T)")
+  
+  if (metric_col %in% c("mean_rel_bias", "sd_bias", "mean_bias")) {
+    p <- p + geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")
+  } else if (metric_col == "coverage_95") {
+    p <- p + geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey50")
+  }
+  
+  if (!is.null(ylims)) {
+    p <- p + coord_cartesian(ylim = ylims)
+  }
+  
+  p
+}
+```
+
+# 4. VAR Parameters: NG vs NC Performance
+
+## 4.1. Relative Bias
+
+```{r var_bias_phi, fig.height=10, fig.width=14}
+#| label: var_bias_phi
+#| echo: false
+
+plot_metric(
+  cond,
+  metric_col = "mean_rel_bias",
+  ylab = "Mean relative bias",
+  title = "Relative bias: VAR coefficients (Phi elements)",
+  params = c("phi11", "phi12", "phi21", "phi22"),
+  use_free_y = TRUE
+)
+```
+
+```{r var_bias_mu, fig.height=6, fig.width=14}
+#| label: var_bias_mu
+#| echo: false
+
+plot_metric(
+  cond,
+  metric_col = "mean_bias",
+  ylab = "Mean bias (truth = 0)",
+  title = "Bias: intercepts (mu)",
+  params = c("mu[1]", "mu[2]"),
+  use_free_y = TRUE
+)
+```
+
+**Interpretation.** Both models recover the VAR parameters with similar accuracy. The NG model (misspecified copula) shows no systematic bias disadvantage compared to NC, indicating that copula misspecification does not propagate to inference on the VAR dynamics.
+
+## 4.2. 95% Coverage
+
+```{r var_coverage_phi, fig.height=10, fig.width=14}
+#| label: var_coverage_phi
+#| echo: false
+
+plot_metric(
+  cond,
+  metric_col = "coverage_95",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: VAR coefficients (Phi elements)",
+  params = c("phi11", "phi12", "phi21", "phi22"),
+  ylims = c(0.80, 1.0)
+)
+```
+
+```{r var_coverage_mu, fig.height=6, fig.width=14}
+#| label: var_coverage_mu
+#| echo: false
+
+plot_metric(
+  cond,
+  metric_col = "coverage_95",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: intercepts (mu)",
+  params = c("mu[1]", "mu[2]"),
+  ylims = c(0.80, 1.0)
+)
+```
+
+**Interpretation.** Coverage is close to nominal for both models across all VAR parameters. There is no evidence that copula misspecification in NG degrades frequentist coverage for $\mu$ or $\Phi$.
+
+## 4.3. SD-Bias
+
+```{r var_sdbias_phi, fig.height=10, fig.width=14}
+#| label: var_sdbias_phi
+#| echo: false
+
+plot_metric(
+  cond,
+  metric_col = "sd_bias",
+  ylab = "SD-bias (posterior SD - empirical SD)",
+  title = "SD-bias: VAR coefficients (Phi elements)",
+  params = c("phi11", "phi12", "phi21", "phi22"),
+  use_free_y = TRUE
+)
+```
+
+```{r var_sdbias_mu, fig.height=6, fig.width=14}
+#| label: var_sdbias_mu
+#| echo: false
+
+plot_metric(
+  cond,
+  metric_col = "sd_bias",
+  ylab = "SD-bias (posterior SD - empirical SD)",
+  title = "SD-bias: intercepts (mu)",
+  params = c("mu[1]", "mu[2]"),
+  use_free_y = TRUE
+)
+```
+
+**Interpretation.** Both models show similar SD-bias patterns, with slight over-estimation of posterior uncertainty at smaller $T$. The patterns are nearly identical between NG and NC, further confirming that copula misspecification has minimal impact on VAR parameter inference.
+
+# 5. Copula Parameters
+
+## 5.1. NC (Clayton copula): theta Recovery
+
+```{r theta_bias, fig.height=5, fig.width=14}
+#| label: theta_bias
+#| echo: false
+
+theta_data <- cond |>
+  filter(Model == "Normal-Clayton (NC)", param == "theta")
+
+if (nrow(theta_data) > 0) {
+  ggplot(theta_data, aes(x = T, y = mean_bias, color = Model, group = Model)) +
+    geom_line(position = position_dodge(0.3), linewidth = 1) +
+    geom_point(position = position_dodge(0.3), size = 2.5) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+    facet_grid(. ~ theta, labeller = label_both) +
+    theme_standard +
+    scale_color_manual(values = model_colors) +
+    labs(title = "NC: Bias for theta (truth = design theta)", 
+         y = "Mean Bias", x = "Time Series Length (T)")
+}
+```
+
+```{r theta_coverage, fig.height=5, fig.width=14}
+#| label: theta_coverage
+#| echo: false
+
+if (nrow(theta_data) > 0) {
+  ggplot(theta_data, aes(x = T, y = coverage_95, color = Model, group = Model)) +
+    geom_line(position = position_dodge(0.3), linewidth = 1) +
+    geom_point(position = position_dodge(0.3), size = 2.5) +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey50") +
+    facet_grid(. ~ theta, labeller = label_both) +
+    theme_standard +
+    scale_color_manual(values = model_colors) +
+    labs(title = "NC: 95% coverage for theta", 
+         y = "Empirical Coverage", x = "Time Series Length (T)") +
+    coord_cartesian(ylim = c(0.6, 1.0))
+}
+```
+
+**Interpretation.** The NC model shows negative bias for $\theta$, with the magnitude increasing with $\theta$. This suggests the prior (Log-Normal(0, 1)) may provide some shrinkage toward smaller values, particularly for $\theta = 8$ which lies in the upper tail of the prior. Coverage is close to nominal for moderate $\theta$ but drops below 0.95 for $\theta = 8$ at small $T$, consistent with the bias pattern.
+
+## 5.2. NG (Gaussian copula): rho Posterior Means
+
+Since $\rho$ has no ground truth under the Clayton DGP, we report posterior means descriptively.
+
+```{r rho_postmean, fig.height=5, fig.width=14}
+#| label: rho_postmean
+#| echo: false
+
+rho_rep <- rep_df |>
+  filter(Model == "Normal-Gaussian (NG)", param == "rho")
+
+if (nrow(rho_rep) > 0) {
+  ggplot(rho_rep, aes(x = T, y = post_mean)) +
+    geom_boxplot(outlier.shape = NA, fill = "#377eb8", alpha = 0.3) +
+    geom_jitter(width = 0.15, alpha = 0.15, size = 0.8, color = "#377eb8") +
+    facet_grid(. ~ theta, labeller = label_both) +
+    theme_standard +
+    labs(
+      title = "NG: Posterior mean of rho by T and theta (no ground truth)",
+      y = "Posterior mean (rho)",
+      x = "Time Series Length (T)"
+    )
+}
+```
+
+**Interpretation.** The posterior mean of $\rho$ increases monotonically with the true Clayton $\theta$, showing how the Gaussian copula "absorbs" the Clayton dependence structure. For $\theta = 8$ (Kendall's $\tau = 0.80$), the NG model estimates $\rho \approx 0.85$, which corresponds to $\tau_{\text{Gauss}} = (2/\pi)\arcsin(0.85) \approx 0.60$ -- lower than the true $\tau = 0.80$ because the Gaussian copula cannot capture the asymmetric lower-tail dependence.
+
+# 6. Marginal Parameters
+
+We report mean bias for the innovation standard deviations ($\sigma$). Under the DGP, the true value is 1.
+
+```{r sigma_bias, fig.height=6, fig.width=14}
+#| label: sigma_bias
+#| echo: false
+
+sigma_data <- cond |>
+  filter(param %in% c("sigma[1]", "sigma[2]"))
+
+if (nrow(sigma_data) > 0) {
+  plot_metric(
+    sigma_data,
+    metric_col = "mean_bias",
+    ylab = "Mean bias (estimate - 1)",
+    title = "Bias for sigma (truth = 1)",
+    use_free_y = TRUE
+  )
+}
+```
+
+```{r sigma_coverage, fig.height=6, fig.width=14}
+#| label: sigma_coverage
+#| echo: false
+
+if (nrow(sigma_data) > 0) {
+  plot_metric(
+    sigma_data,
+    metric_col = "coverage_95",
+    ylab = "Empirical 95% coverage",
+    title = "95% coverage: sigma",
+    ylims = c(0.80, 1.0)
+  )
+}
+```
+
+**Interpretation.** Both models recover the marginal scale parameters with minimal bias and near-nominal coverage. As in Studies 1-2, the marginal parameters are robust to copula misspecification because they depend primarily on the univariate distribution of residuals, not their dependence structure.
+
+# 7. MCMC Diagnostics: Status Split
+
+```{r status_split}
+#| label: status_split
+#| echo: false
+
+aggregate_by_status <- function(df) {
+  df |>
+    filter(mcmc_status != "Failed/Error") |>
+    group_by(condition_id, Model, param, mcmc_status, T, theta) |>
+    summarise(
+      N_valid       = n(),
+      mean_rel_bias = mean(rel_bias, na.rm = TRUE),
+      coverage_95   = mean(cover95, na.rm = TRUE),
+      mean_post_sd  = mean(post_sd, na.rm = TRUE),
+      emp_sd        = sd(post_mean, na.rm = TRUE),
+      mean_bias     = mean(bias, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    mutate(
+      emp_sd  = ifelse(is.na(emp_sd), 0, emp_sd),
+      sd_bias = mean_post_sd - emp_sd,
+      RMSE    = sqrt(mean_bias^2 + emp_sd^2)
+    )
+}
+
+cond_status <- aggregate_by_status(rep_df)
+```
+
+```{r coverage_status_nc, fig.height=12, fig.width=14}
+#| label: coverage_status_nc
+#| echo: false
+
+status_nc <- cond_status |>
+  filter(Model == "Normal-Clayton (NC)", param %in% c(core_params, "theta"))
+
+if (nrow(status_nc) > 0) {
+  ggplot(status_nc, aes(x = T, y = coverage_95, color = mcmc_status, group = mcmc_status)) +
+    geom_line(position = position_dodge(0.3), linewidth = 1) +
+    geom_point(position = position_dodge(0.3), size = 2.5) +
+    geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey50") +
+    facet_grid(param ~ theta, labeller = label_both) +
+    theme_standard +
+    labs(
+      title = "NC: Coverage split by MCMC status",
+      y = "Empirical Coverage",
+      x = "Time Series Length (T)"
+    ) +
+    coord_cartesian(ylim = c(0.6, 1.0))
+}
+```
+
+**Interpretation.** Since all replications are classified as Clean (no divergences, $\hat{R} \leq 1.01$), there is no variation by MCMC status. This confirms excellent computational behavior for both models.
+
+# 8. Export Tables
+
+```{r export_tables}
+#| label: export_tables
+#| echo: false
+
+# Aggregated condition-level summary
+export_cond <- cond |>
+  dplyr::select(
+    condition_id, Model, param, T, theta,
+    N_valid, N_truth_avail,
+    mean_rel_bias, coverage_95, RMSE,
+    mean_post_sd, emp_sd, sd_bias,
+    mean_n_div, prop_div, mean_rhat
+  )
+
+write_csv(export_cond, file.path(EXPORT_DIR, "analysis_summary_aggregated.csv"))
+
+# Status-split summary
+export_status <- cond_status |>
+  dplyr::select(
+    condition_id, Model, param, mcmc_status, T, theta,
+    N_valid, mean_rel_bias, coverage_95, RMSE,
+    mean_post_sd, emp_sd, sd_bias
+  )
+
+write_csv(export_status, file.path(EXPORT_DIR, "analysis_summary_status_split.csv"))
+
+# MCMC health counts
+mcmc_health_export <- rep_df |>
+  distinct(condition_id, rep_id, Model, mcmc_status, T, theta) |>
+  count(Model, theta, T, mcmc_status, name = "Count") |>
+  tidyr::complete(Model, theta, T, mcmc_status, fill = list(Count = 0)) |>
+  arrange(Model, theta, T)
+
+write_csv(mcmc_health_export, file.path(EXPORT_DIR, "analysis_mcmc_health_counts.csv"))
+```
+
+Tables exported to `r EXPORT_DIR`:
+
+- `analysis_summary_aggregated.csv`: Condition-level metrics
+- `analysis_summary_status_split.csv`: Metrics split by MCMC status
+- `analysis_mcmc_health_counts.csv`: MCMC convergence counts
+
+# 9. Details
+
+This section provides technical details on the implementation of the simulation study.
+
+## 9.1. Prior Specifications
+
+```{r prior_table_ng}
+#| label: prior_table_ng
+#| echo: false
+
+prior_ng <- data.frame(
+  Parameter = c(
+    "mu_1, mu_2",
+    "phi_11, phi_12, phi_21, phi_22",
+    "sigma_1, sigma_2",
+    "rho"
+  ),
+  Prior = c(
+    "Normal(0, 1)",
+    "Normal(0, 0.5)",
+    "Half-Normal(0, 1)",
+    "Normal(0, 0.5)"
+  ),
+  Support = c(
+    "Real line",
+    "(-1, 1)",
+    "(0, infinity)",
+    "(-1, 1)"
+  ),
+  Rationale = c(
+    "Weakly informative; centered at true value (0)",
+    "Regularizes toward stationarity",
+    "Weakly informative scale prior",
+    "Regularizes toward independence"
+  )
+)
+
+kable(prior_ng, caption = "Prior Specifications for the Normal-Gaussian (NG) Model.")
+```
+
+```{r prior_table_nc}
+#| label: prior_table_nc
+#| echo: false
+
+prior_nc <- data.frame(
+  Parameter = c(
+    "mu_1, mu_2",
+    "phi_11, phi_12, phi_21, phi_22",
+    "sigma_1, sigma_2",
+    "theta"
+  ),
+  Prior = c(
+    "Normal(0, 1)",
+    "Normal(0, 0.5)",
+    "Half-Normal(0, 1)",
+    "Log-Normal(0, 1)"
+  ),
+  Support = c(
+    "Real line",
+    "(-1, 1)",
+    "(0, infinity)",
+    "(0, infinity)"
+  ),
+  Rationale = c(
+    "Weakly informative",
+    "Regularizes toward stationarity",
+    "Weakly informative scale prior",
+    "Covers design values within +/- 2 SDs"
+  )
+)
+
+kable(prior_nc, caption = "Prior Specifications for the Normal-Clayton (NC) Model.")
+```
+
+::: {.callout-note}
+## Log-Normal Prior for Clayton theta
+
+The Log-Normal(0, 1) prior has median 1 and places approximately 95% of its mass in (0.14, 7.4). This covers the design grid $\theta \in \{0.5, 1, 2, 4, 8\}$ well, with only the largest value ($\theta = 8$) lying slightly in the upper tail.
+:::
+
+## 9.2. MCMC Settings
+
+```{r mcmc_settings_table}
+#| label: mcmc_settings_table
+#| echo: false
+
+mcmc_settings <- data.frame(
+  Setting = c(
+    "Chains",
+    "Total iterations",
+    "Warmup iterations",
+    "Post-warmup draws",
+    "adapt_delta",
+    "max_treedepth",
+    "Parallelization"
+  ),
+  Value = c(
+    "4",
+    "3,000",
+    "1,500",
+    "1,500",
+    "0.98",
+    "13",
+    "Outer loop"
+  ),
+  Description = c(
+    "Number of independent Markov chains",
+    "Iterations per chain (including warmup)",
+    "Discarded adaptation period",
+    "Retained samples per chain",
+    "Target acceptance probability",
+    "Maximum tree depth for NUTS",
+    "Replications parallelized; chains sequential"
+  )
+)
+
+kable(mcmc_settings, caption = "MCMC Sampling Configuration.")
+```
+
+## 9.3. Gaussian Copula Log-Density
+
+For uniform marginals $(u, v) \in (0,1)^2$ with $\rho \in (-1, 1)$, let $z_1 = \Phi^{-1}(u)$ and $z_2 = \Phi^{-1}(v)$:
+
+$$
+\log c_{\text{Gauss}}(u, v; \rho) = -\frac{1}{2}\log(1 - \rho^2) - \frac{1}{2(1-\rho^2)}\left(z_1^2 - 2\rho z_1 z_2 + z_2^2\right) + \frac{1}{2}\left(z_1^2 + z_2^2\right)
+$$
+
+## 9.4. Clayton Copula Log-Density
+
+For $(u, v) \in (0,1)^2$ with $\theta > 0$:
+
+$$
+\log c_{\text{Clayton}}(u, v; \theta) = \log(1 + \theta) - (1+\theta)\bigl(\log u + \log v\bigr) - \left(2 + \frac{1}{\theta}\right) \log S
+$$
+
+where $S = u^{-\theta} + v^{-\theta} - 1$.
+
+::: {.callout-note}
+## Boundary Clamping
+
+Both copula implementations apply boundary clamping with $\varepsilon = 10^{-9}$:
+
+$$
+u_{\text{clamped}} = \max(\varepsilon, \min(1 - \varepsilon, u))
+$$
+
+This prevents numerical issues when $u \to 0$ or $u \to 1$.
+:::
+
+## 9.5. Reproducibility Strategy
+
+The simulation uses deterministic seeding:
+
+- **Global seed**: 3033 (dedicated for Study 3)
+- **Init seeds**: seed_init = 7e5 + cid * 1000 + rid
+- **Stan seeds**: seed_Stan = 8e5 + cid * 1000 + rid
+
+## 9.6. Ground Truth Under Copula Misspecification
+
+```{r ground_truth_table}
+#| label: ground_truth_table
+#| echo: false
+
+ground_truth <- data.frame(
+  Parameter = c(
+    "mu_1, mu_2",
+    "phi_11, phi_22",
+    "phi_12, phi_21",
+    "sigma_1, sigma_2",
+    "rho",
+    "theta"
+  ),
+  NG_Ground_Truth = c(
+    "0",
+    "0.40",
+    "0.10",
+    "1.0",
+    "NA (undefined)",
+    "---"
+  ),
+  NC_Ground_Truth = c(
+    "0",
+    "0.40",
+    "0.10",
+    "1.0",
+    "---",
+    "Design value"
+  )
+)
+
+kable(ground_truth, 
+      col.names = c("Parameter", "NG Ground Truth", "NC Ground Truth"),
+      caption = "Ground Truth Under Copula Misspecification.")
+```
+
+The NG model's $\rho$ has no ground truth because the Gaussian copula is misspecified for the Clayton DGP. Bias and coverage metrics are not computed for $\rho$.

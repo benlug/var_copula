@@ -1,11 +1,6 @@
 ---
 title: "Study 5: SEM with Exponential Margins — Indicator vs. Latent Skewness Layer"
 format:
-  html:
-    toc: true
-    toc-depth: 3
-    code-fold: true
-    code-tools: true
   pdf:
     toc: true
     toc-depth: 3

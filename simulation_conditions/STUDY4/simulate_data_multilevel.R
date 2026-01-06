@@ -43,6 +43,16 @@ generate_residuals <- function(n, m1, m2, copula_rho, eps = 1e-9) {
 }
 
 simulate_one_replication_ml <- function(cond_row, rep_i, output_dir) {
+  # Deterministic per-(condition, replication) seeding.
+  #
+  # Why this matters:
+  #   - If you resume a run with START_COND/START_REP while skipping
+  #     already-written .rds files, using only a single global set.seed()
+  #     can silently generate repeated datasets under different rep IDs.
+  #   - Seeding inside each replication makes simulation reproducible and
+  #     resume-safe.
+  seed_sim <- 700000L + as.integer(cond_row$condition_id) * 1000L + as.integer(rep_i)
+  set.seed(seed_sim)
   N <- cond_row$N_units
   Tn <- cond_row$T
   burnin <- cond_row$burnin
@@ -85,6 +95,7 @@ simulate_one_replication_ml <- function(cond_row, rep_i, output_dir) {
   out <- list(
     condition_id = cond_row$condition_id,
     rep_i = rep_i,
+    seed_sim = seed_sim,
     N = N, T = Tn,
     data = panel,
     phi_matrix = Phi,
