@@ -1,5 +1,5 @@
 # run_pipeline_SEM.R — Study 5 : SEM Skewness (A: indicator, B: latent)
-# Pipe: simulate → (optional) checks → fit → analyze
+# Pipeline: simulate → (optional) checks → fit → analyze
 suppressPackageStartupMessages({
   library(dplyr)
   library(purrr)
@@ -34,10 +34,42 @@ dir.create(FITS_DIR, FALSE, TRUE)
 dir.create(RESULT_DIR, FALSE, TRUE)
 dir.create(STAN_DIR, FALSE, TRUE)
 
+## -- Verify Stan files exist ----------------------------------------------
+# For consistency with Studies 1–3, we expect Stan sources under ./stan.
+# To make the pipeline robust to different directory layouts, we also
+# accept the files in BASE_DIR and (if found) copy them into ./stan.
+stan_files <- c(
+  "sem_A_indicator_EG.stan",
+  "sem_B_latent_EG.stan"
+)
+missing <- character()
+for (sf in stan_files) {
+  target <- file.path(STAN_DIR, sf)
+  if (!file.exists(target)) {
+    alt <- file.path(BASE_DIR, sf)
+    if (file.exists(alt)) {
+      file.copy(alt, target, overwrite = TRUE)
+      message("Copied Stan file into ./stan: ", sf)
+    } else {
+      missing <- c(missing, target)
+    }
+  }
+}
+if (length(missing) > 0) {
+  stop(
+    "Missing required Stan files:\n  ", paste(missing, collapse = "\n  "),
+    "\nPlace them in: ", STAN_DIR
+  )
+}
+
 ## -- resume flags --------------------------------------------------------
 START_COND <- as.integer(Sys.getenv("START_COND", "1"))
 START_REP <- as.integer(Sys.getenv("START_REP", "1"))
 message(">>> SEM Pipeline Start. Condition=", START_COND, "  Replication=", START_REP)
+
+# Overwrite controls (default: resume-friendly)
+OVERWRITE_SIM <- identical(Sys.getenv("OVERWRITE_SIM", "0"), "1")
+OVERWRITE_FITS <- identical(Sys.getenv("OVERWRITE_FITS", "0"), "1")
 
 ## -- toggles & constants -------------------------------------------------
 RUN_SIM <- TRUE
@@ -46,8 +78,11 @@ RUN_FITTING <- TRUE
 RUN_ANALYSIS <- TRUE
 RUN_VISUALIZATION <- FALSE
 
-REPS_PER_CELL <- 90
-NUM_CORES_OUT <- max(1, parallel::detectCores() - 1)
+REPS_PER_CELL <- 200
+NUM_CORES_OUT <- max(1, parallel::detectCores() - 2)
+
+# Global seed is not relied upon (simulation + fitting are seeded per task),
+# but setting it helps keep any incidental randomness stable.
 set.seed(2042)
 
 ## =======================================================================
@@ -91,7 +126,8 @@ if (RUN_SIM) {
     sim_conditions_df = design_grid,
     output_dir        = DATA_DIR,
     start_condition   = START_COND,
-    start_rep         = START_REP
+    start_rep         = START_REP,
+    overwrite         = OVERWRITE_SIM
   )
 }
 
@@ -122,7 +158,8 @@ if (RUN_FITTING) {
     max_treedepth   = 12, # per your request
     cores_outer     = NUM_CORES_OUT,
     start_condition = START_COND,
-    start_rep       = START_REP
+    start_rep       = START_REP,
+    overwrite_fits  = OVERWRITE_FITS
   )
 }
 

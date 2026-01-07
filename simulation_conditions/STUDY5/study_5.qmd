@@ -1,534 +1,392 @@
 ---
-title: "Study 5: SEM with Exponential Margins — Indicator vs. Latent Skewness Layer"
+title: "Study 5: Layer Sensitivity in Exponential–Gaussian Copula VAR — Indicator vs. Latent Skewness"
 format:
   pdf:
     toc: true
-    toc-depth: 3
-    documentclass: scrartcl
-    classoption:
-      - DIV=11
-      - numbers=noendperiod
-    header-includes:
-      - \KOMAoption{captions}{tableheading}
+    toc_depth: 3
 execute:
   warning: false
   message: false
 ---
 
 ```{r setup}
+#| label: setup
+#| echo: false
 suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
   library(readr)
   library(ggplot2)
   library(stringr)
-  library(forcats)
   library(knitr)
-  library(scales)
+  library(RColorBrewer)
+
+  if (!requireNamespace("patchwork", quietly = TRUE)) {
+    message("Package 'patchwork' is recommended for arranging plots.")
+  } else {
+    library(patchwork)
+  }
 })
 
-# Default chunk behavior: render this as a report (not a code listing)
-knitr::opts_chunk$set(
-  echo = FALSE,
-  message = FALSE,
-  warning = FALSE,
-  fig.align = "center",
-  dpi = 300
-)
-
-# ---- Paths (robust to running from either STUDY5/ or repository root) ----
-BASE_DIR <- "."
-if (!dir.exists(file.path(BASE_DIR, "data")) && dir.exists("simulation_conditions")) {
-  cand <- file.path("simulation_conditions", "STUDY5")
-  if (dir.exists(cand)) BASE_DIR <- cand
-}
-
-DATA_DIR   <- file.path(BASE_DIR, "data")
-RES_DIR    <- file.path(BASE_DIR, "results_sem")
-EXPORT_DIR <- file.path(RES_DIR, "exported_tables")
-dir.create(EXPORT_DIR, recursive = TRUE, showWarnings = FALSE)
+# ---- paths ----
+DATA_DIR   <- file.path("data")
+RES_DIR    <- file.path("results_sem")
+EXPORT_DIR <- file.path(RES_DIR, "exported_tables_s5")
+dir.create(EXPORT_DIR, showWarnings = FALSE, recursive = TRUE)
 
 files <- list(
-  design = file.path(DATA_DIR, "sim_conditions_sem.rds"),
-  rep    = file.path(RES_DIR,  "summary_replications_sem.csv"),
-  cond   = file.path(RES_DIR,  "summary_conditions_sem.csv")
+  rep    = file.path(RES_DIR, "summary_replications_sem.csv"),
+  cond   = file.path(RES_DIR, "summary_conditions_sem.csv"),
+  design = file.path(DATA_DIR, "sim_conditions_sem.rds")
 )
 
-missing <- names(files)[!file.exists(unlist(files))]
-if (length(missing) > 0) {
-  cat("\n\n### Missing required inputs\n\n")
-  cat("This report expects outputs created by the Study 5 pipeline.\n\n")
-  cat("Run, in order:\n")
-  cat("1. `run_pipeline_SEM.R` (simulate + fit)\n")
-  cat("2. `analysis_sem.R` (create summary CSVs)\n\n")
-  cat("Missing file(s):\n")
-  for (nm in missing) cat(paste0("- `", files[[nm]], "`\n"))
-  cat("\n")
-  knitr::knit_exit()
+if (!all(file.exists(unlist(files)))) {
+  stop(
+    "Missing required input files. Expected:\n",
+    " - ", files$rep, "\n",
+    " - ", files$cond, "\n",
+    " - ", files$design, "\n",
+    "Run the Study 5 pipeline (run_pipeline_SEM.R) and analysis_sem.R first."
+  )
 }
 
-# ---- Read inputs ----
-design_raw <- readRDS(files$design)
-rep_raw    <- read_csv(files$rep,  show_col_types = FALSE)
-cond_raw   <- read_csv(files$cond, show_col_types = FALSE)
+# ---- plotting defaults (match Studies 1–3) ----
+theme_set(
+  theme_bw(base_size = 13) +
+    theme(
+      panel.grid.minor = element_blank(),
+      strip.background = element_rect(fill = "grey95", colour = NA),
+      strip.text = element_text(face = "bold"),
+      legend.position = "bottom"
+    )
+)
 
-# ---- Consistent labels ----
-T_levels <- sort(unique(design_raw$T))
+pal_status <- c(
+  "Clean" = "#4daf4a",
+  "Problematic" = "#ff7f00",
+  "Failed/Error" = "#e41a1c"
+)
 
-design <- design_raw %>%
-  mutate(
-    sem_study = factor(
-      sem_study,
-      levels = c("A_indicator", "B_latent"),
-      labels = c("Study A: indicator-skew", "Study B: latent-skew")
-    ),
-    direction = factor(direction, levels = c("++", "+-")),
-    T = factor(T, levels = T_levels),
-    rho = factor(rho)
-  ) %>%
+pal_model <- c(
+  "EI" = "#1b9e77",
+  "EL" = "#d95f02"
+)
+
+RHAT_THRESHOLD <- 1.01
+```
+
+# 0. Summary
+
+This study evaluates whether (and how strongly) **dynamic parameter inference** for a bivariate VAR(1) depends on *where* non-Gaussianity is placed in the hierarchy when fitting an **Exponential–Gaussian (EG) copula** model.
+
+Two alternative model structures are compared:
+
+- **EI (Indicator‑Exponential):** signed/shifted Exponential margins on **measurement errors** with a Gaussian copula at the measurement layer.
+- **EL (Latent‑Exponential):** signed/shifted Exponential margins on **VAR innovations** with a Gaussian copula at the innovation layer.
+
+We generate data under two corresponding DGPs (Study A and Study B) and fit both EI and EL in every condition. The central question is:
+
+> When the Exponential‑copula layer is *misplaced* (indicator vs latent), does inference for $(\mu, \Phi, \rho)$ degrade meaningfully, and if so, in what way (bias, calibration, or sampling pathologies)?
+
+# 1. Introduction
+
+The Exponential–Gaussian copula construction separates:
+
+1. **marginals** (signed/shifted Exponential) and
+2. **dependence** (Gaussian copula with parameter $\rho$).
+
+This study specifically probes *layer sensitivity*: whether placing that copula‑marginal construction on **measurement residuals** vs **state/innovation residuals** yields meaningfully different posterior behaviour for the VAR dynamics.
+
+## 1.1 Data generating processes
+
+All conditions use a fixed bivariate VAR(1) coefficient matrix $\Phi$ and $\mu = 0$.
+
+### Study A: indicator‑skew DGP
+
+Latent state evolves with Gaussian innovations:
+
+$$
+x_t = \mu + \Phi x_{t-1} + u_t, \qquad u_t \sim \mathcal{N}(0, I_2)
+$$
+
+Observed indicators equal state plus **signed/shifted Exponential** measurement residuals:
+
+$$
+y_t = x_t + \varepsilon_t,
+$$
+
+where each component of $\varepsilon_t$ is standardized to mean 0 and variance 1 using the transforms:
+
+- Right‑skew: $\varepsilon = X - 1$, $X \sim \text{Exp}(1)$, support $\varepsilon \ge -1$.
+- Left‑skew:  $\varepsilon = 1 - X$, $X \sim \text{Exp}(1)$, support $\varepsilon \le 1$.
+
+Dependence between $(\varepsilon_{t1},\varepsilon_{t2})$ is imposed by a **Gaussian copula** with correlation parameter $\rho$.
+
+### Study B: latent‑skew DGP
+
+Observed series follow a VAR(1) recursion where innovations are signed/shifted Exponential with Gaussian‑copula dependence:
+
+$$
+y_t = \mu + \Phi y_{t-1} + \zeta_t,
+$$
+
+with $(\zeta_{t1},\zeta_{t2})$ generated from signed/shifted Exponential margins and Gaussian copula correlation $\rho$.
+
+## 1.2 Experimental factors
+
+Conditions vary:
+
+- **DGP type:** Study A vs Study B
+- **Direction pattern:** `++` (both right‑skew) vs `+-` (mixed skew)
+- **Length:** $T \in \{100, 200\}$
+- **Dependence:** $\rho = 0.30$
+
+Both models (EI and EL) are fit for each replication in each condition.
+
+```{r design_grid}
+#| label: design_grid
+#| echo: false
+
+design <- readRDS(files$design) |>
   select(condition_id, sem_study, direction, T, rho, n_reps)
 
-rep_df <- rep_raw %>%
-  filter(!is.na(param)) %>%
-  left_join(design, by = "condition_id") %>%
-  mutate(
-    Model = factor(
-      model,
-      levels = c("EI", "EL"),
-      labels = c("EI: Exponential at indicator", "EL: Exponential at latent")
-    ),
-    status_raw = status,
-    status = factor(
-      status,
-      levels = c("ok", "divergent", "bad_rhat", "failed"),
-      labels = c("ok", "divergent", "bad R-hat", "failed")
-    ),
-    n = as.integer(as.character(T))
-  )
+design |>
+  group_by(sem_study, direction, T, rho) |>
+  summarise(N_conditions = n(), n_reps = first(n_reps), .groups = "drop") |>
+  arrange(sem_study, direction, T) |>
+  knitr::kable(caption = "Design grid overview")
+```
 
-cond <- cond_raw %>%
-  left_join(design, by = "condition_id") %>%
-  mutate(
-    Model = factor(
-      model,
-      levels = c("EI", "EL"),
-      labels = c("EI: Exponential at indicator", "EL: Exponential at latent")
-    ),
-    n = as.integer(as.character(T)),
-    sd_bias = mean_post_sd - emp_sd
-  )
+# 2. Data loading and preparation
 
-# ---- Plot styling ----
-theme_study <- function() {
-  theme_minimal(base_size = 12) +
-    theme(
-      legend.position = "bottom",
-      panel.grid.minor = element_blank(),
-      strip.text = element_text(face = "bold")
-    )
-}
+```{r data_prep}
+#| label: data_prep
+#| echo: false
 
-# ---- Parameters of interest ----
-core_params <- c(
+design <- readRDS(files$design)
+
+cond_raw <- read_csv(files$cond, show_col_types = FALSE) |>
+  left_join(design, by = "condition_id")
+
+# NOTE: DO NOT drop param==NA rows.
+# Those rows carry failed/missing fit statuses which are needed for
+# the MCMC-status summaries (consistent with Studies 1–3).
+rep_raw <- read_csv(files$rep, show_col_types = FALSE) |>
+  left_join(design, by = "condition_id")
+
+param_levels <- c(
+  "sigma_exp[1]", "sigma_exp[2]",
   "mu[1]", "mu[2]",
-  "phi[1,1]", "phi[1,2]", "phi[2,1]", "phi[2,2]",
+  "phi11", "phi12", "phi21", "phi22",
   "rho"
 )
 
-sigma_params <- c("sigma_exp[1]", "sigma_exp[2]")
-
-# Replication-level diagnostics (one row per fit)
-rep_level <- rep_df %>%
-  distinct(model, Model, condition_id, rep_id, sem_study, direction, T, n, rho,
-           status_raw, status, n_div, max_rhat)
-
-# Helper: safe percent formatter
-pct <- function(x) percent(x, accuracy = 0.1)
-```
-
-## Purpose
-
-This simulation study compares two SEM formulations that differ only in **where Exponential skewness is placed**:
-
-- **EI (indicator-skew):** Exponential (signed/shifted) margins are applied to the *measurement errors*; the Gaussian copula dependence (parameter $\rho$) is also imposed at this layer.
-- **EL (latent-skew):** Exponential (signed/shifted) margins are applied to the *state innovations*; the copula dependence is imposed at the latent-innovation layer.
-
-The primary question is sensitivity: **How much do inference and recovery of the core dynamic parameters change when the skewness layer is mis-specified?**
-
-We focus on recovery of:
-
-- $\mu$ (state intercept)
-- $\Phi$ (VAR(1) coefficient matrix)
-- $\rho$ (copula correlation at the active layer)
-
-and report the implied Exponential shift parameters $\sigma_{\mathrm{exp}}$ separately.
-
-::: {.callout-important}
-### Important interpretation note
-Condition-level performance summaries in `summary_conditions_sem.csv` are computed **only over fits classified as `ok`** by `analysis_sem.R` (i.e., no divergences and $\widehat{R}\le 1.01$). This is useful for understanding *conditional* estimator behavior, but it can overstate performance if a large fraction of fits are problematic or fail.
-:::
-
-## Simulation design
-
-```{r design-summary}
-design_overview <- tibble(
-  `SEM study` = paste(levels(design$sem_study), collapse = "; "),
-  `Skew direction` = paste(levels(design$direction), collapse = ", "),
-  `Time series length (T)` = paste(levels(design$T), collapse = ", "),
-  `Copula correlation (rho)` = paste(levels(design$rho), collapse = ", "),
-  `Replications / cell` = paste(sort(unique(design$n_reps)), collapse = ", "),
-  `Total conditions` = n_distinct(design$condition_id)
+label_sem <- c(
+  A_indicator = "Study A (indicator-skew DGP)",
+  B_latent    = "Study B (latent-skew DGP)"
 )
 
-kable(design_overview, align = "l")
+prep <- function(df) {
+  df |>
+    mutate(
+      param = factor(param, levels = param_levels),
+      T = factor(T),
+      sem_study = factor(sem_study, levels = names(label_sem), labels = unname(label_sem)),
+      direction = factor(direction, levels = c("++", "+-")),
+      Model = factor(model, levels = c("EI", "EL"),
+                     labels = c("EI (Indicator-Exponential)", "EL (Latent-Exponential)"))
+    )
+}
+
+cond <- prep(cond_raw) |>
+  mutate(RMSE = sqrt(mean_bias^2 + coalesce(emp_sd^2, 0)))
+
+rep_df <- prep(rep_raw)
+
+core_params <- c("mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22", "rho")
+sigma_params <- c("sigma_exp[1]", "sigma_exp[2]")
 ```
 
-### Data-generating process
+## 2.1 MCMC classification and overview
 
-Both studies use a 2-dimensional latent state $x_t$ with VAR(1) dynamics and two observed indicators $y_t$:
+Replication runs are classified using the same conventions as Studies 1–3:
 
-$$
-\begin{aligned}
-  x_t &= \mu + \Phi x_{t-1} + u_t, \\
-  y_t &= x_t + \varepsilon_t.
-\end{aligned}
-$$
+- **Failed/Error:** the fit did not complete successfully (`status != "ok"`) or diagnostics are missing.
+- **Problematic:** sampling completed but either (i) `max_rhat > 1.01` or (ii) `n_div > 0` (if recorded).
+- **Clean:** sampling completed and diagnostics are within thresholds.
 
-- In **Study A**, $u_t$ is Gaussian and the measurement errors $\varepsilon_t$ have signed/shifted Exponential margins with copula dependence.
-- In **Study B**, $\varepsilon_t$ is Gaussian and the state innovations $u_t$ have signed/shifted Exponential margins with copula dependence.
+```{r mcmc_classification}
+#| label: mcmc_classification
+#| echo: false
 
-The *skew direction* ("++" vs "+-") controls the sign pattern of the Exponential transform across the two dimensions.
+has_divs <- any(!is.na(rep_df$n_div))
 
-## Estimation targets and summaries
-
-- **Replication-level summaries** (`summary_replications_sem.csv`) include posterior means/SDs, 95% credible interval bounds, divergences, and $\widehat{R}$ diagnostics.
-- **Condition-level summaries** (`summary_conditions_sem.csv`) aggregate performance across replications *after filtering to `ok` fits*.
-
-For the bias plots below:
-
-- Reported *relative bias* is $\mathrm{bias}/|\theta|$ when $|\theta|>0$.
-- For parameters with true value $0$ (e.g., $\mu$ in this design), the reported “relative bias” reduces to *absolute bias*.
-
-## Diagnostics and fit quality
-
-### Status rates
-
-```{r status-rates, fig.width=10, fig.height=4.8}
-status_rates <- rep_level %>%
-  count(Model, sem_study, T, direction, status, name = "n") %>%
-  group_by(Model, sem_study, T, direction) %>%
-  mutate(prop = n / sum(n)) %>%
-  ungroup()
-
-p_status <- ggplot(status_rates, aes(x = direction, y = prop, fill = status)) +
-  geom_col(width = 0.85) +
-  facet_grid(Model ~ sem_study + T) +
-  scale_y_continuous(labels = percent_format(accuracy = 1)) +
-  labs(
-    x = "Skew direction",
-    y = "Proportion of replications",
-    fill = "Fit status",
-    title = "MCMC status by model, SEM study, sample size, and skew direction"
-  ) +
-  theme_study()
-
-p_status
-```
-
-### Divergences
-
-```{r divergences, fig.width=10, fig.height=4.5}
-p_div <- ggplot(rep_level, aes(x = direction, y = n_div, color = Model)) +
-  geom_boxplot(outlier.alpha = 0.4) +
-  facet_grid(sem_study ~ T) +
-  labs(
-    x = "Skew direction",
-    y = "Number of divergent transitions",
-    color = "Model",
-    title = "Divergences across replications"
-  ) +
-  theme_study()
-
-p_div
-```
-
-### Maximum $\widehat{R}$
-
-```{r rhat, fig.width=10, fig.height=4.5}
-p_rhat <- ggplot(rep_level, aes(x = direction, y = max_rhat, color = Model)) +
-  geom_boxplot(outlier.alpha = 0.4) +
-  geom_hline(yintercept = 1.01, linetype = "dashed") +
-  facet_grid(sem_study ~ T) +
-  labs(
-    x = "Skew direction",
-    y = "Max R-hat across parameters",
-    color = "Model",
-    title = "Convergence diagnostics (threshold at 1.01)"
-  ) +
-  theme_study()
-
-p_rhat
-```
-
-## Core parameter recovery
-
-```{r core-data}
-cond_core <- cond %>%
-  filter(param %in% core_params, N_valid > 0) %>%
+rep_level <- rep_df |>
+  distinct(condition_id, rep_id, Model, status, n_div, max_rhat, sem_study, direction, T) |>
   mutate(
-    param = factor(param, levels = core_params),
-    direction = factor(direction, levels = c("++", "+-")),
-    T = factor(T, levels = T_levels)
+    mcmc_status = case_when(
+      is.na(max_rhat) | status != "ok" ~ "Failed/Error",
+      max_rhat > RHAT_THRESHOLD | (has_divs & n_div > 0) ~ "Problematic",
+      TRUE ~ "Clean"
+    ),
+    mcmc_status = factor(mcmc_status, levels = c("Clean", "Problematic", "Failed/Error"))
+  )
+
+mcmc_summary <- rep_level |>
+  group_by(Model, sem_study, direction, T, mcmc_status) |>
+  summarise(Count = n(), .groups = "drop")
+```
+
+```{r mcmc_status_plot, fig.height=6, fig.width=11}
+#| label: mcmc_status_plot
+#| echo: false
+
+ggplot(mcmc_summary, aes(x = T, y = Count, fill = mcmc_status)) +
+  geom_bar(stat = "identity") +
+  facet_grid(Model ~ sem_study + direction) +
+  scale_fill_manual(values = pal_status) +
+  labs(
+    x = "T",
+    y = "Number of replications",
+    fill = "MCMC status",
+    title = "MCMC convergence status by condition"
   )
 ```
 
-### Relative bias (or absolute bias when truth is 0)
+```{r mcmc_div_plot, fig.height=6, fig.width=11}
+#| label: mcmc_div_plot
+#| echo: false
 
-```{r core-bias, fig.width=10.5, fig.height=8.5}
-p_bias <- ggplot(cond_core, aes(x = n, y = mean_rel_bias, color = Model, group = Model)) +
-  geom_hline(yintercept = 0, linetype = "dotted") +
-  geom_line() +
-  geom_point(size = 1.6) +
-  facet_grid(param ~ sem_study + direction) +
-  scale_x_continuous(breaks = sort(unique(cond_core$n))) +
-  labs(
-    x = "Sample size (T)",
-    y = "Relative bias",
-    color = "Model",
-    title = "Core parameters: bias as a function of sample size"
-  ) +
-  theme_study()
+if (has_divs) {
+  div_df <- rep_level |>
+    filter(mcmc_status != "Failed/Error")
 
-p_bias
-```
-
-### 95% interval coverage
-
-```{r core-coverage, fig.width=10.5, fig.height=8.5}
-p_cov <- ggplot(cond_core, aes(x = n, y = coverage_95, color = Model, group = Model)) +
-  geom_hline(yintercept = 0.95, linetype = "dotted") +
-  geom_line() +
-  geom_point(size = 1.6) +
-  facet_grid(param ~ sem_study + direction) +
-  scale_x_continuous(breaks = sort(unique(cond_core$n))) +
-  scale_y_continuous(limits = c(0, 1), labels = percent_format(accuracy = 1)) +
-  labs(
-    x = "Sample size (T)",
-    y = "Coverage",
-    color = "Model",
-    title = "Core parameters: 95% credible-interval coverage"
-  ) +
-  theme_study()
-
-p_cov
-```
-
-### Posterior SD calibration ($\overline{\mathrm{SD}}_{\mathrm{post}} - \mathrm{SD}(\overline{\theta})$)
-
-```{r core-sd-bias, fig.width=10.5, fig.height=8.5}
-p_sd <- ggplot(cond_core, aes(x = n, y = sd_bias, color = Model, group = Model)) +
-  geom_hline(yintercept = 0, linetype = "dotted") +
-  geom_line() +
-  geom_point(size = 1.6) +
-  facet_grid(param ~ sem_study + direction) +
-  scale_x_continuous(breaks = sort(unique(cond_core$n))) +
-  labs(
-    x = "Sample size (T)",
-    y = "SD bias",
-    color = "Model",
-    title = "Core parameters: posterior SD calibration"
-  ) +
-  theme_study()
-
-p_sd
-```
-
-
-## Sensitivity to diagnostic filtering
-
-Condition-level summaries (`summary_conditions_sem.csv`) are computed **only from replications flagged as `ok`** in `analysis_sem.R` (no divergences and $\widehat{R} \le 1.01$). This is typically the right choice for reporting inferential quality, but it is also useful to understand how much performance deteriorates when including replications with diagnostics warnings.
-
-The table below focuses on two high-leverage quantities: the cross-lag $\phi_{1,2}$ and the copula correlation $\rho$.
-
-```{r diag_sensitivity}
-focus_params <- c("phi[1,2]", "rho")
-
-sens_tbl <- rep_df %>%
-  filter(param %in% focus_params, !is.na(bias), !is.na(cover95)) %>%
-  group_by(Model, sem_study, param, status_raw) %>%
-  summarise(
-    N = n(),
-    mean_bias = mean(bias, na.rm = TRUE),
-    mean_abs_bias = mean(abs(bias), na.rm = TRUE),
-    coverage_95 = mean(cover95, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    param = factor(param, levels = focus_params),
-    status_raw = factor(status_raw, levels = c("ok", "divergent", "bad_rhat", "failed"))
-  ) %>%
-  arrange(param, sem_study, Model, status_raw)
-
-kable(
-  sens_tbl,
-  digits = 3,
-  caption = "Replication-level bias and coverage by diagnostic status (selected parameters)."
-)
-```
-
-```{r diag_sensitivity_plot, fig.width=10, fig.height=4}
-sens_plot <- sens_tbl %>%
-  filter(!is.na(coverage_95), status_raw != "failed")
-
-if (nrow(sens_plot) > 0) {
-  ggplot(sens_plot, aes(x = status_raw, y = coverage_95, color = Model, group = Model)) +
-    geom_point(size = 2) +
-    geom_line() +
-    facet_grid(param ~ sem_study) +
-    geom_hline(yintercept = 0.95, linetype = "dashed") +
-    scale_y_continuous(limits = c(0, 1), labels = percent_format(accuracy = 1)) +
-    labs(x = NULL, y = "Coverage (95% interval)") +
-    theme_study()
+  ggplot(div_df, aes(x = T, y = n_div)) +
+    geom_boxplot(outlier.shape = NA) +
+    geom_point(alpha = 0.35, position = position_jitter(width = 0.15, height = 0)) +
+    facet_grid(Model ~ sem_study + direction) +
+    labs(
+      title = "Divergent transitions per replication (post-warmup)",
+      x = "T",
+      y = "n_div"
+    )
+} else {
+  plot.new(); title("No divergence counts were recorded in the fit outputs.")
 }
 ```
 
+# 3. Results: recovery of core dynamic parameters
 
-## Exponential shift parameters $\sigma_{\mathrm{exp}}$
+Condition‑level metrics are computed over replications with `status == "ok"` (completed sampling). This matches Studies 1–3 and avoids silently dropping non‑converged runs.
 
-::: {.callout-note}
-### Why $\sigma_{\mathrm{exp}}$ needs care
-In these Stan implementations, $\sigma_{\mathrm{exp}}$ is an *implied shift* ensuring positivity of the Exponential likelihood after applying the signed residual transform. It depends on sample extremes through a (smoothed) maximum term. As a result, treating the “truth” as exactly 1 (the shift used in simulation) is a **reference point**, not a strict population parameter in the same way as $\mu$, $\Phi$, or $\rho$.
-:::
+```{r bias_core, fig.height=8, fig.width=11}
+#| label: bias_core
+#| echo: false
 
-```{r sigma-data}
-cond_sigma <- cond %>%
-  filter(param %in% sigma_params, N_valid > 0) %>%
-  mutate(
-    param = factor(param, levels = sigma_params),
-    direction = factor(direction, levels = c("++", "+-")),
-    T = factor(T, levels = T_levels)
+cond_core <- cond |>
+  filter(param %in% core_params)
+
+ggplot(cond_core, aes(x = T, y = mean_bias, colour = Model, group = Model)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line(linewidth = 0.6) +
+  geom_point(size = 1.6) +
+  facet_grid(param ~ sem_study + direction, scales = "free_y") +
+  scale_colour_manual(values = pal_model) +
+  labs(
+    title = "Bias of core parameters (condition means)",
+    x = "T",
+    y = "Mean bias",
+    colour = "Model"
   )
 ```
 
-### Bias
+```{r coverage_core, fig.height=8, fig.width=11}
+#| label: coverage_core
+#| echo: false
 
-```{r sigma-bias, fig.width=10, fig.height=4.8}
-p_sig_bias <- ggplot(cond_sigma, aes(x = n, y = mean_bias, color = Model, group = Model)) +
-  geom_hline(yintercept = 0, linetype = "dotted") +
-  geom_line() +
+ggplot(cond_core, aes(x = T, y = coverage_95, colour = Model, group = Model)) +
+  geom_hline(yintercept = 0.95, linetype = 2) +
+  geom_line(linewidth = 0.6) +
   geom_point(size = 1.6) +
   facet_grid(param ~ sem_study + direction) +
-  scale_x_continuous(breaks = sort(unique(cond_sigma$n))) +
+  scale_colour_manual(values = pal_model) +
+  coord_cartesian(ylim = c(0, 1)) +
   labs(
-    x = "Sample size (T)",
-    y = "Bias",
-    color = "Model",
-    title = "Implied Exponential shift parameters: bias (reference truth = 1)"
-  ) +
-  theme_study()
-
-p_sig_bias
-```
-
-### Coverage
-
-```{r sigma-coverage, fig.width=10, fig.height=4.8}
-p_sig_cov <- ggplot(cond_sigma, aes(x = n, y = coverage_95, color = Model, group = Model)) +
-  geom_hline(yintercept = 0.95, linetype = "dotted") +
-  geom_line() +
-  geom_point(size = 1.6) +
-  facet_grid(param ~ sem_study + direction) +
-  scale_x_continuous(breaks = sort(unique(cond_sigma$n))) +
-  scale_y_continuous(limits = c(0, 1), labels = percent_format(accuracy = 1)) +
-  labs(
-    x = "Sample size (T)",
-    y = "Coverage",
-    color = "Model",
-    title = "Implied Exponential shift parameters: 95% interval coverage"
-  ) +
-  theme_study()
-
-p_sig_cov
-```
-
-## Quick cross-condition summaries
-
-```{r summaries}
-# Diagnostics summary
-status_summary <- rep_level %>%
-  count(Model, sem_study, status_raw, name = "n") %>%
-  group_by(Model, sem_study) %>%
-  mutate(prop = n / sum(n)) %>%
-  ungroup() %>%
-  arrange(sem_study, Model, desc(prop))
-
-# Core performance summary (conditional on ok fits, because cond is built that way)
-core_summary <- cond_core %>%
-  group_by(Model, sem_study, param) %>%
-  summarise(
-    avg_abs_rel_bias = mean(abs(mean_rel_bias), na.rm = TRUE),
-    avg_coverage = mean(coverage_95, na.rm = TRUE),
-    avg_RMSE = mean(RMSE, na.rm = TRUE),
-    .groups = "drop"
+    title = "95% interval coverage of core parameters",
+    x = "T",
+    y = "Empirical coverage",
+    colour = "Model"
   )
-
-cat("### Diagnostic status proportions (replication-level)\n\n")
-kable(
-  status_summary %>%
-    mutate(prop = percent(prop, accuracy = 0.1)) %>%
-    select(Model, sem_study, status = status_raw, n, prop),
-  align = "l"
-)
-
-cat("\n\n### Average core-parameter performance (condition-level; ok fits only)\n\n")
-kable(
-  core_summary %>%
-    mutate(
-      avg_coverage = percent(avg_coverage, accuracy = 0.1)
-    ),
-  digits = 3,
-  align = "l"
-)
 ```
 
-## Exportable tables
+```{r sd_bias_core, fig.height=8, fig.width=11}
+#| label: sd_bias_core
+#| echo: false
 
-```{r export}
-export_core <- cond_core %>%
-  select(
-    sem_study, direction, T, n, rho,
-    Model, param,
-    N_valid, mean_bias, mean_rel_bias,
-    RMSE, coverage_95,
-    mean_post_sd, emp_sd, sd_bias,
-    mean_rhat
-  ) %>%
-  arrange(sem_study, direction, n, Model, param)
-
-write_csv(export_core, file.path(EXPORT_DIR, "study5_core_summary.csv"))
-
-export_sigma <- cond_sigma %>%
-  select(
-    sem_study, direction, T, n, rho,
-    Model, param,
-    N_valid, mean_bias, mean_rel_bias,
-    RMSE, coverage_95,
-    mean_post_sd, emp_sd, sd_bias,
-    mean_rhat
-  ) %>%
-  arrange(sem_study, direction, n, Model, param)
-
-write_csv(export_sigma, file.path(EXPORT_DIR, "study5_sigma_summary.csv"))
-
-cat("Tables written to:\n")
-cat(paste0("- ", file.path(EXPORT_DIR, "study5_core_summary.csv"), "\n"))
-cat(paste0("- ", file.path(EXPORT_DIR, "study5_sigma_summary.csv"), "\n"))
+ggplot(cond_core, aes(x = T, y = sd_bias, colour = Model, group = Model)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line(linewidth = 0.6) +
+  geom_point(size = 1.6) +
+  facet_grid(param ~ sem_study + direction, scales = "free_y") +
+  scale_colour_manual(values = pal_model) +
+  labs(
+    title = "SD bias (mean posterior SD − empirical SD of posterior means)",
+    x = "T",
+    y = "SD bias",
+    colour = "Model"
+  )
 ```
 
-## Notes on interpretation
+# 4. Secondary parameters: shift terms $\sigma_{\text{exp}}$
 
-1. **Layer mis-specification affects identification.** In this setup, $\rho$ is identified at the *active layer*; fitting the wrong layer can distort both dependence and dynamic parameters, not just the marginal residual behavior.
+The Exponential likelihood is implemented via a shift so that the transformed variable remains positive.
+As a result, $\sigma_{\text{exp}}$ is best viewed as a *nuisance/feasibility* term (and may be sample‑dependent under the soft‑max construction in the Stan code).
 
-2. **Condition-level summaries are conditional.** If a model has low `ok` rates for certain conditions, its condition-level bias/coverage plots may look “fine” simply because only the best-behaved runs are retained.
+```{r sigma_bias, fig.height=5, fig.width=11}
+#| label: sigma_bias
+#| echo: false
 
-3. **The Exponential shift parameters are not pure scale parameters.** The $\sigma_{\mathrm{exp}}$ quantities are entangled with sample extremes via a maximum term. Treat comparisons to the simulation shift of 1 as diagnostic rather than as a primary target.
+cond_sigma <- cond |>
+  filter(param %in% sigma_params)
+
+ggplot(cond_sigma, aes(x = T, y = mean_bias, colour = Model, group = Model)) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_line(linewidth = 0.6) +
+  geom_point(size = 1.6) +
+  facet_grid(param ~ sem_study + direction, scales = "free_y") +
+  scale_colour_manual(values = pal_model) +
+  labs(
+    title = "Bias of sigma_exp (reference truth set to 1)",
+    x = "T",
+    y = "Mean bias",
+    colour = "Model"
+  )
+```
+
+# 5. Exportable summary tables
+
+```{r exports}
+#| label: exports
+#| echo: false
+
+# A compact table focused on the VAR dynamics and copula parameter.
+export_tbl <- cond |>
+  filter(param %in% core_params) |>
+  select(sem_study, direction, T, rho, Model, param,
+         N_expected, N_ok, prop_ok,
+         mean_bias, coverage_95, mean_post_sd, emp_sd, sd_bias, RMSE,
+         mean_n_div, mean_rhat)
+
+write_csv(export_tbl, file.path(EXPORT_DIR, "study5_core_parameter_summary.csv"))
+
+export_tbl |>
+  mutate(across(where(is.numeric), ~ round(.x, 3))) |>
+  knitr::kable(caption = "Exportable core-parameter summary (rounded)")
+```
+
+```{r export_path_note}
+#| label: export_path_note
+#| echo: false
+
+cat("Tables written to:", EXPORT_DIR)
+```
