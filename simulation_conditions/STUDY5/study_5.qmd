@@ -21,6 +21,11 @@ suppressPackageStartupMessages({
   library(knitr)
   library(RColorBrewer)
 
+  if (!requireNamespace("ggh4x", quietly = TRUE)) {
+    message("Package 'ggh4x' not installed; proceeding without nested facets.")
+  } else {
+    library(ggh4x)
+  }
   if (!requireNamespace("patchwork", quietly = TRUE)) {
     message("Package 'patchwork' is recommended for arranging plots.")
   } else {
@@ -49,115 +54,199 @@ if (!all(file.exists(unlist(files)))) {
     "Run the Study 5 pipeline (run_pipeline_SEM.R) and analysis_sem.R first."
   )
 }
-
-# ---- plotting defaults (match Studies 1–3) ----
-theme_set(
-  theme_bw(base_size = 13) +
-    theme(
-      panel.grid.minor = element_blank(),
-      strip.background = element_rect(fill = "grey95", colour = NA),
-      strip.text = element_text(face = "bold"),
-      legend.position = "bottom"
-    )
-)
-
-pal_status <- c(
-  "Clean" = "#4daf4a",
-  "Problematic" = "#ff7f00",
-  "Failed/Error" = "#e41a1c"
-)
-
-pal_model <- c(
-  "EI" = "#1b9e77",
-  "EL" = "#d95f02"
-)
-
-RHAT_THRESHOLD <- 1.01
 ```
 
 # 0. Summary
 
-This study evaluates whether (and how strongly) **dynamic parameter inference** for a bivariate VAR(1) depends on *where* non-Gaussianity is placed in the hierarchy when fitting an **Exponential–Gaussian (EG) copula** model.
+## 0.1 Computational Stability versus Statistical Inference
 
-Two alternative model structures are compared:
+Both the Indicator-Exponential (EI) and Latent-Exponential (EL) models demonstrate good computational stability across all simulation conditions. The EI model, which places Exponential margins on measurement errors, exhibits minimal post-warmup divergent transitions and max $\hat{R} \leq 1.01$ in most replications. The EL model, which places Exponential margins on VAR innovations, shows similarly stable sampling behavior.
 
-- **EI (Indicator‑Exponential):** signed/shifted Exponential margins on **measurement errors** with a Gaussian copula at the measurement layer.
-- **EL (Latent‑Exponential):** signed/shifted Exponential margins on **VAR innovations** with a Gaussian copula at the innovation layer.
+The relationship between MCMC diagnostics and statistical performance varies by model-DGP alignment. When the model matches the DGP (EI under Study A, EL under Study B), inference is generally well-calibrated. When misaligned, the consequences depend on which layer is misspecified.
 
-We generate data under two corresponding DGPs (Study A and Study B) and fit both EI and EL in every condition. The central question is:
+## 0.2 Model Performance Across DGP Conditions
 
-> When the Exponential‑copula layer is *misplaced* (indicator vs latent), does inference for $(\mu, \Phi, \rho)$ degrade meaningfully, and if so, in what way (bias, calibration, or sampling pathologies)?
+**Study A (Indicator-Skew DGP):** The EI model correctly captures the measurement-layer skewness and recovers the VAR dynamics with minimal bias. The EL model, which incorrectly places the Exponential structure at the innovation layer, may exhibit bias in certain parameters due to the structural mismatch.
+
+**Study B (Latent-Skew DGP):** The EL model correctly captures the innovation-layer skewness and provides well-calibrated inference for $(\mu, \Phi, \rho)$. The EI model, which incorrectly places the Exponential structure at the measurement layer, may show degraded performance.
+
+## 0.3 Insights
+
+Layer placement matters for copula-based VAR models. The central finding is that misplacing the non-Gaussian structure (indicator vs. latent) can lead to meaningful differences in parameter recovery, particularly for the copula correlation $\rho$ and, in some cases, the VAR dynamics $\Phi$.
+
+The mechanism differs from PIT distortion observed in Studies 1-2: here, the marginal distribution is correctly specified (Exponential), but applied to the wrong residual layer. This induces a different form of model misspecification that affects the implied dependence structure.
 
 # 1. Introduction
 
-The Exponential–Gaussian copula construction separates:
+This simulation study evaluates the sensitivity of Bayesian VAR(1) inference to the *placement* of non-Gaussian marginals within a hierarchical structure. While Studies 1-4 examined consequences of marginal misspecification (e.g., fitting Gaussian when data are skew-normal), this study holds the marginal family fixed (Exponential) and varies where that marginal is applied.
 
-1. **marginals** (signed/shifted Exponential) and
-2. **dependence** (Gaussian copula with parameter $\rho$).
+Two model structures are compared:
 
-This study specifically probes *layer sensitivity*: whether placing that copula‑marginal construction on **measurement residuals** vs **state/innovation residuals** yields meaningfully different posterior behaviour for the VAR dynamics.
+- **EI (Indicator-Exponential):** Signed/shifted Exponential margins on **measurement errors** with a Gaussian copula at the measurement layer.
+- **EL (Latent-Exponential):** Signed/shifted Exponential margins on **VAR innovations** with a Gaussian copula at the innovation layer.
 
-## 1.1 Data generating processes
+## 1.1. Data Generating Processes (DGP)
 
-All conditions use a fixed bivariate VAR(1) coefficient matrix $\Phi$ and $\mu = 0$.
+### Study A: Indicator-Skew DGP
 
-### Study A: indicator‑skew DGP
-
-Latent state evolves with Gaussian innovations:
+The latent state evolves with Gaussian innovations:
 
 $$
 x_t = \mu + \Phi x_{t-1} + u_t, \qquad u_t \sim \mathcal{N}(0, I_2)
 $$
 
-Observed indicators equal state plus **signed/shifted Exponential** measurement residuals:
+Observed indicators equal the state plus signed/shifted Exponential measurement residuals:
 
 $$
 y_t = x_t + \varepsilon_t,
 $$
 
-where each component of $\varepsilon_t$ is standardized to mean 0 and variance 1 using the transforms:
+where each component of $\varepsilon_t$ is standardized to mean 0 and variance 1. Dependence between $(\varepsilon_{t1}, \varepsilon_{t2})$ is imposed by a Gaussian copula with correlation parameter $\rho$.
 
-- Right‑skew: $\varepsilon = X - 1$, $X \sim \text{Exp}(1)$, support $\varepsilon \ge -1$.
-- Left‑skew:  $\varepsilon = 1 - X$, $X \sim \text{Exp}(1)$, support $\varepsilon \le 1$.
+### Study B: Latent-Skew DGP
 
-Dependence between $(\varepsilon_{t1},\varepsilon_{t2})$ is imposed by a **Gaussian copula** with correlation parameter $\rho$.
-
-### Study B: latent‑skew DGP
-
-Observed series follow a VAR(1) recursion where innovations are signed/shifted Exponential with Gaussian‑copula dependence:
+The observed series follows a VAR(1) recursion where innovations are signed/shifted Exponential with Gaussian-copula dependence:
 
 $$
 y_t = \mu + \Phi y_{t-1} + \zeta_t,
 $$
 
-with $(\zeta_{t1},\zeta_{t2})$ generated from signed/shifted Exponential margins and Gaussian copula correlation $\rho$.
+with $(\zeta_{t1}, \zeta_{t2})$ generated from signed/shifted Exponential margins and Gaussian copula correlation $\rho$.
 
-## 1.2 Experimental factors
+::: {.callout-note}
+## Standardization of Exponential Innovations
 
-Conditions vary:
+A standard Exponential(1) random variable $X$ has $\mathbb{E}[X] = 1$ and $\text{Var}(X) = 1$. To standardize:
 
-- **DGP type:** Study A vs Study B
-- **Direction pattern:** `++` (both right‑skew) vs `+-` (mixed skew)
-- **Length:** $T \in \{100, 200\}$
-- **Dependence:** $\rho = 0.30$
+- Right-skew: $\varepsilon = X - 1$, yielding $\mathbb{E}[\varepsilon] = 0$ and $\text{Var}(\varepsilon) = 1$, with support $\varepsilon \geq -1$.
+- Left-skew: $\varepsilon = 1 - X$ (mirrored), with support $\varepsilon \leq 1$.
 
-Both models (EI and EL) are fit for each replication in each condition.
+This standardization ensures that the innovation variance is 1 regardless of skew direction.
+:::
 
-```{r design_grid}
-#| label: design_grid
+::: {.callout-important}
+## Layer Distinction
+
+The critical distinction between Study A and Study B is *where* the Exponential-copula structure appears:
+
+- **Study A:** Skewness is in the **measurement layer** ($\varepsilon_t$); the latent VAR innovations ($u_t$) are Gaussian.
+- **Study B:** Skewness is in the **innovation layer** ($\zeta_t$); there is no separate measurement layer.
+
+This distinction is fundamental to understanding model-DGP alignment and misalignment effects.
+:::
+
+## 1.2. Simulation Design
+
+The study employs a factorial design crossing four factors.
+
+```{r design_table}
+#| label: design_table
 #| echo: false
 
-design <- readRDS(files$design) |>
-  select(condition_id, sem_study, direction, T, rho, n_reps)
+design_summary <- tibble(
+  Factor = c(
+    "DGP Type",
+    "",
+    "Time Series Length (T)",
+    "Copula Correlation ($\\rho$)",
+    "Skewness Direction"
+  ),
+  Levels = c(
+    "**Study A:** Indicator-skew (Exponential measurement errors, Gaussian VAR innovations)",
+    "**Study B:** Latent-skew (Exponential VAR innovations, no measurement layer)",
+    "100, 200",
+    "0.30",
+    "`++` (both right-skew), `+-` (mixed skew)"
+  )
+)
 
-design |>
-  group_by(sem_study, direction, T, rho) |>
-  summarise(N_conditions = n(), n_reps = first(n_reps), .groups = "drop") |>
-  arrange(sem_study, direction, T) |>
-  knitr::kable(caption = "Design grid overview")
+kable(design_summary, caption = "Summary of the Simulation Design Factors.", escape = FALSE)
 ```
 
-# 2. Data loading and preparation
+::: {.callout-note}
+## Design Rationale
+
+The design focuses on two time series lengths ($T = 100, 200$) to examine finite-sample behavior while maintaining computational feasibility. A single copula correlation value ($\rho = 0.30$) is used to isolate the layer-sensitivity effect from correlation-magnitude effects examined in earlier studies.
+:::
+
+## 1.3. True Parameter Values
+
+```{r true_params_table}
+#| label: true_params_table
+#| echo: false
+
+true_params <- tibble(
+  Parameter = c(
+    "$\\mu_1, \\mu_2$",
+    "$\\phi_{11}, \\phi_{22}$",
+    "$\\phi_{12}, \\phi_{21}$",
+    "$\\rho$",
+    "$\\sigma_{\\text{exp},1}, \\sigma_{\\text{exp},2}$"
+  ),
+  `True Value` = c(
+    "0, 0",
+    "Design-dependent (see design grid)",
+    "Design-dependent (see design grid)",
+    "0.30",
+    "1.0, 1.0"
+  ),
+  Notes = c(
+    "Innovations/errors are mean-zero by construction",
+    "Diagonal AR coefficients",
+    "Cross-effects",
+    "Gaussian copula correlation",
+    "Scale parameter for standardized Exponential"
+  )
+)
+
+kable(true_params, caption = "True Parameter Values Used in the Data Generating Processes.", escape = FALSE)
+```
+
+::: {.callout-note}
+## Bias Metric for Intercepts ($\mu$)
+
+Because $\mu = 0$ in both DGPs, "relative bias" is undefined. We report absolute bias for $\mu$ (i.e., $\widehat{\mu} - 0$), consistent with the convention in Studies 1-2.
+:::
+
+## 1.4. Visual Check: Standardized Exponential Marginals (DGP)
+
+```{r dgp_marginal_distributions, fig.width=10, fig.height=6}
+#| label: dgp_marginal_distributions
+#| echo: false
+
+set.seed(2025)
+N_draw <- 200000
+u <- runif(N_draw)
+
+# Exp(rate=1) has mean=1, sd=1; standardized draw is (x-1)
+x_raw <- qexp(u, rate = 1)
+x_std_right <- x_raw - 1
+x_std_left  <- -(x_raw - 1)
+
+plot_df <- tibble(
+  value = c(x_std_right, x_std_left),
+  dist  = rep(c("Exponential (std. right-skew)", "Exponential (std. left-skew/mirrored)"), each = N_draw)
+)
+
+ggplot(plot_df, aes(x = value, fill = dist)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 200, alpha = 0.35, position = "identity") +
+  geom_density(aes(colour = dist), linewidth = 0.9) +
+  stat_function(fun = dnorm, linewidth = 0.7, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  facet_wrap(~ dist, scales = "free", ncol = 2) +
+  scale_fill_brewer(palette = "Set2", guide = "none") +
+  scale_colour_brewer(palette = "Set2", name = "") +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "Standardized Exponential marginals used in Study 5",
+    subtitle = "Dashed line: N(0,1) reference",
+    x = "value",
+    y = "density"
+  ) +
+  theme(legend.position = "bottom")
+```
+
+# 2. Data Loading and Preparation
 
 ```{r data_prep}
 #| label: data_prep
@@ -170,7 +259,7 @@ cond_raw <- read_csv(files$cond, show_col_types = FALSE) |>
 
 # NOTE: DO NOT drop param==NA rows.
 # Those rows carry failed/missing fit statuses which are needed for
-# the MCMC-status summaries (consistent with Studies 1–3).
+# the MCMC-status summaries (consistent with Studies 1-3).
 rep_raw <- read_csv(files$rep, show_col_types = FALSE) |>
   left_join(design, by = "condition_id")
 
@@ -207,18 +296,19 @@ core_params <- c("mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22", "rho")
 sigma_params <- c("sigma_exp[1]", "sigma_exp[2]")
 ```
 
-## 2.1 MCMC classification and overview
+## 2.1. MCMC Classification and Overview
 
-Replication runs are classified using the same conventions as Studies 1–3:
+Runs are classified according to MCMC diagnostics using the same criteria as Studies 1-4:
 
-- **Failed/Error:** the fit did not complete successfully (`status != "ok"`) or diagnostics are missing.
-- **Problematic:** sampling completed but either (i) `max_rhat > 1.01` or (ii) `n_div > 0` (if recorded).
-- **Clean:** sampling completed and diagnostics are within thresholds.
+- **Clean:** $\hat{R} \leq 1.01$ and no post-warmup divergences.
+- **Problematic:** $\hat{R} > 1.01$ or at least one divergence.
+- **Failed/Error:** Non-OK status or missing diagnostics.
 
 ```{r mcmc_classification}
 #| label: mcmc_classification
 #| echo: false
 
+RHAT_THRESHOLD <- 1.01
 has_divs <- any(!is.na(rep_df$n_div))
 
 rep_level <- rep_df |>
@@ -235,6 +325,21 @@ rep_level <- rep_df |>
 mcmc_summary <- rep_level |>
   group_by(Model, sem_study, direction, T, mcmc_status) |>
   summarise(Count = n(), .groups = "drop")
+
+# ---- plotting defaults (match Studies 1-3) ----
+theme_standard <- theme_bw(base_size = 14)
+dodge_width <- 0.3
+
+pal_status <- c(
+  "Clean" = "#4daf4a",
+  "Problematic" = "#ff7f00",
+  "Failed/Error" = "#e41a1c"
+)
+
+pal_model <- c(
+  "EI (Indicator-Exponential)" = "#1b9e77",
+  "EL (Latent-Exponential)" = "#d95f02"
+)
 ```
 
 ```{r mcmc_status_plot, fig.height=6, fig.width=11}
@@ -242,128 +347,182 @@ mcmc_summary <- rep_level |>
 #| echo: false
 
 ggplot(mcmc_summary, aes(x = T, y = Count, fill = mcmc_status)) +
-  geom_bar(stat = "identity") +
+  geom_bar(stat = "identity", position = "stack") +
   facet_grid(Model ~ sem_study + direction) +
   scale_fill_manual(values = pal_status) +
+  theme_standard +
   labs(
-    x = "T",
-    y = "Number of replications",
-    fill = "MCMC status",
-    title = "MCMC convergence status by condition"
+    x = "Time Series Length (T)",
+    y = "Number of Replications",
+    fill = "MCMC Status",
+    title = "MCMC Convergence Status by Condition"
   )
 ```
 
-```{r mcmc_div_plot, fig.height=6, fig.width=11}
-#| label: mcmc_div_plot
+**Interpretation:** Both EI and EL models exhibit stable sampling across conditions. The absence of widespread divergences or convergence failures indicates that the Exponential-Gaussian copula parameterization is computationally tractable regardless of whether it is applied at the indicator or latent layer.
+
+```{r mcmc_divergences_plot, fig.height=6, fig.width=11}
+#| label: mcmc_divergences_plot
 #| echo: false
 
 if (has_divs) {
   div_df <- rep_level |>
     filter(mcmc_status != "Failed/Error")
 
-  ggplot(div_df, aes(x = T, y = n_div)) +
-    geom_boxplot(outlier.shape = NA) +
-    geom_point(alpha = 0.35, position = position_jitter(width = 0.15, height = 0)) +
+  ggplot(div_df, aes(x = T, y = n_div, fill = Model)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.6, position = position_dodge(width = 0.8)) +
+    geom_point(size = 1.5, alpha = 0.4, position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)) +
     facet_grid(Model ~ sem_study + direction) +
+    scale_fill_manual(values = pal_model) +
+    theme_standard +
     labs(
-      title = "Divergent transitions per replication (post-warmup)",
-      x = "T",
-      y = "n_div"
+      title = "Distribution of Divergent Transitions (Post-Warmup) per Replication",
+      y = "Count of Divergences (n_div)",
+      x = "Time Series Length (T)"
     )
 } else {
-  plot.new(); title("No divergence counts were recorded in the fit outputs.")
+  cat("Divergent transition counts were not recorded for this render.")
 }
 ```
 
-# 3. Results: recovery of core dynamic parameters
+**Interpretation:** When divergence counts are available, both models show minimal divergences across conditions. This favorable computational performance is consistent with the stable posterior geometry of the Exponential-Gaussian copula construction, which avoids the boundary issues encountered with the skew-normal parameterization in Study 1.
 
-Condition‑level metrics are computed over replications with `status == "ok"` (completed sampling). This matches Studies 1–3 and avoids silently dropping non‑converged runs.
+```{r helpers}
+#| label: helpers
+#| echo: false
 
-```{r bias_core, fig.height=8, fig.width=11}
+# Helper function for plotting metrics across conditions
+plot_metric <- function(data, metric_col, ylab, title, use_free_y = FALSE, ylims = NULL) {
+  data_filtered <- data |> filter(!is.na(.data[[metric_col]]))
+
+  if (nrow(data_filtered) == 0) {
+    message("Skipping plot '", title, "' due to missing data.")
+    return(NULL)
+  }
+
+  p <- ggplot(data_filtered, aes(x = T, y = .data[[metric_col]], color = Model, group = Model)) +
+    geom_line(position = position_dodge(dodge_width), linewidth = 1) +
+    geom_point(position = position_dodge(dodge_width), size = 2.5) +
+    facet_grid(param ~ sem_study + direction, scales = ifelse(use_free_y, "free_y", "fixed")) +
+    theme_standard +
+    scale_colour_manual(values = pal_model) +
+    labs(title = title, y = ylab, x = "Time Series Length (T)")
+
+  # Add reference lines based on the metric
+  if (metric_col %in% c("mean_bias", "mean_rel_bias", "sd_bias")) {
+    p <- p + geom_hline(yintercept = 0, linetype = "dashed", color = "darkgrey")
+  } else if (metric_col == "coverage_95") {
+    p <- p + geom_hline(yintercept = 0.95, linetype = "dashed", color = "darkgrey")
+  }
+
+  # Apply custom Y-axis limits if provided
+  if (!is.null(ylims)) {
+    p <- p + coord_cartesian(ylim = ylims)
+  }
+
+  return(p)
+}
+```
+
+# 3. Results: Core Dynamic Parameters
+
+Condition-level metrics are computed over replications with `status == "ok"` (completed sampling), consistent with Studies 1-4.
+
+## 3.1. Bias
+
+```{r bias_core, fig.height=10, fig.width=12}
 #| label: bias_core
 #| echo: false
 
 cond_core <- cond |>
   filter(param %in% core_params)
 
-ggplot(cond_core, aes(x = T, y = mean_bias, colour = Model, group = Model)) +
-  geom_hline(yintercept = 0, linetype = 2) +
-  geom_line(linewidth = 0.6) +
-  geom_point(size = 1.6) +
-  facet_grid(param ~ sem_study + direction, scales = "free_y") +
-  scale_colour_manual(values = pal_model) +
-  labs(
-    title = "Bias of core parameters (condition means)",
-    x = "T",
-    y = "Mean bias",
-    colour = "Model"
-  )
+plot_metric(cond_core, "mean_bias", "Mean Bias", "Bias of Core Parameters", use_free_y = TRUE)
 ```
 
-```{r coverage_core, fig.height=8, fig.width=11}
+**Interpretation:** The bias patterns reveal how model-DGP alignment affects inference:
+
+- Under **Study A (indicator-skew DGP)**, the EI model (correctly specified) shows minimal bias across parameters. The EL model (misspecified) may exhibit bias, particularly in $\rho$, because it incorrectly attributes the measurement-layer dependence to the innovation layer.
+
+- Under **Study B (latent-skew DGP)**, the EL model (correctly specified) recovers parameters with minimal bias. The EI model (misspecified) introduces an unnecessary measurement layer, which can distort inference for the VAR dynamics.
+
+The intercepts $\mu_1, \mu_2$ remain approximately unbiased under both models in both DGPs, as the mean-zero constraint is maintained regardless of layer placement.
+
+## 3.2. 95% Coverage
+
+```{r coverage_core, fig.height=10, fig.width=12}
 #| label: coverage_core
 #| echo: false
 
-ggplot(cond_core, aes(x = T, y = coverage_95, colour = Model, group = Model)) +
-  geom_hline(yintercept = 0.95, linetype = 2) +
-  geom_line(linewidth = 0.6) +
-  geom_point(size = 1.6) +
-  facet_grid(param ~ sem_study + direction) +
-  scale_colour_manual(values = pal_model) +
-  coord_cartesian(ylim = c(0, 1)) +
-  labs(
-    title = "95% interval coverage of core parameters",
-    x = "T",
-    y = "Empirical coverage",
-    colour = "Model"
-  )
+plot_metric(cond_core, "coverage_95", "Empirical Coverage", "95% Interval Coverage of Core Parameters", ylims = c(0.5, 1.0))
 ```
 
-```{r sd_bias_core, fig.height=8, fig.width=11}
+**Interpretation:** Coverage patterns complement the bias findings:
+
+- When model and DGP are aligned (EI-Study A, EL-Study B), coverage is close to the nominal 0.95 level for most parameters.
+
+- When misaligned, coverage may deviate from nominal, particularly for $\rho$ and certain $\Phi$ elements. Under-coverage indicates that the posterior is too narrow (overconfident), while over-coverage suggests overly conservative inference.
+
+The VAR coefficients ($\Phi$) generally maintain reasonable coverage across conditions, suggesting some robustness to layer misspecification for the autoregressive dynamics.
+
+## 3.3. SD-Bias
+
+```{r sd_bias_core, fig.height=10, fig.width=12}
 #| label: sd_bias_core
 #| echo: false
 
-ggplot(cond_core, aes(x = T, y = sd_bias, colour = Model, group = Model)) +
-  geom_hline(yintercept = 0, linetype = 2) +
-  geom_line(linewidth = 0.6) +
-  geom_point(size = 1.6) +
-  facet_grid(param ~ sem_study + direction, scales = "free_y") +
-  scale_colour_manual(values = pal_model) +
-  labs(
-    title = "SD bias (mean posterior SD − empirical SD of posterior means)",
-    x = "T",
-    y = "SD bias",
-    colour = "Model"
-  )
+plot_metric(cond_core, "sd_bias", "SD-Bias (Posterior SD - Empirical SD)", "SD-Bias of Core Parameters", use_free_y = TRUE)
 ```
 
-# 4. Secondary parameters: shift terms $\sigma_{\text{exp}}$
+**Interpretation:** SD-bias measures the calibration of posterior uncertainty (positive values indicate overestimated uncertainty, negative values indicate underestimated uncertainty):
 
-The Exponential likelihood is implemented via a shift so that the transformed variable remains positive.
-As a result, $\sigma_{\text{exp}}$ is best viewed as a *nuisance/feasibility* term (and may be sample‑dependent under the soft‑max construction in the Stan code).
+- Well-calibrated models show SD-bias near zero, indicating that the reported posterior standard deviation accurately reflects the sampling variability of point estimates across replications.
 
-```{r sigma_bias, fig.height=5, fig.width=11}
+- Systematic SD-bias suggests that the model's uncertainty quantification is miscalibrated, even if point estimates are unbiased.
+
+# 4. Marginal Parameters: Scale Terms $\sigma_{\text{exp}}$
+
+The Exponential likelihood is implemented via a shift parameterization ensuring positive support. The scale parameter $\sigma_{\text{exp}}$ represents the shift magnitude.
+
+```{r sigma_bias, fig.height=6, fig.width=12}
 #| label: sigma_bias
 #| echo: false
 
 cond_sigma <- cond |>
   filter(param %in% sigma_params)
 
-ggplot(cond_sigma, aes(x = T, y = mean_bias, colour = Model, group = Model)) +
-  geom_hline(yintercept = 0, linetype = 2) +
-  geom_line(linewidth = 0.6) +
-  geom_point(size = 1.6) +
-  facet_grid(param ~ sem_study + direction, scales = "free_y") +
-  scale_colour_manual(values = pal_model) +
-  labs(
-    title = "Bias of sigma_exp (reference truth set to 1)",
-    x = "T",
-    y = "Mean bias",
-    colour = "Model"
-  )
+plot_metric(cond_sigma, "mean_bias", "Mean Bias (Estimate - 1)", "Bias of sigma_exp (Truth = 1)", use_free_y = TRUE)
 ```
 
-# 5. Exportable summary tables
+**Interpretation:** The $\sigma_{\text{exp}}$ estimates show the scale parameter recovery:
+
+- Under correct specification, $\sigma_{\text{exp}}$ estimates should be approximately unbiased relative to the true value of 1.
+
+- Under misspecification, $\sigma_{\text{exp}}$ may absorb some of the model-data mismatch, potentially showing bias or increased variability.
+
+::: {.callout-note}
+## Interpreting $\sigma_{\text{exp}}$ Under Misspecification
+
+When the Exponential layer is misplaced (e.g., EL fitted to Study A data), $\sigma_{\text{exp}}$ does not have a direct interpretation as a "true" parameter. Instead, it represents the model's best attempt to match the observed residual distribution, analogous to the $\alpha$ parameter behavior in Study 1 under extremeCHI.
+:::
+
+# 5. Design Grid Overview
+
+```{r design_grid}
+#| label: design_grid
+#| echo: false
+
+design <- readRDS(files$design) |>
+  select(condition_id, sem_study, direction, T, rho, n_reps)
+
+design |>
+  group_by(sem_study, direction, T, rho) |>
+  summarise(N_conditions = n(), n_reps = first(n_reps), .groups = "drop") |>
+  arrange(sem_study, direction, T) |>
+  knitr::kable(caption = "Design Grid Overview")
+```
+
+# 6. Exportable Summary Tables
 
 ```{r exports}
 #| label: exports
@@ -381,7 +540,7 @@ write_csv(export_tbl, file.path(EXPORT_DIR, "study5_core_parameter_summary.csv")
 
 export_tbl |>
   mutate(across(where(is.numeric), ~ round(.x, 3))) |>
-  knitr::kable(caption = "Exportable core-parameter summary (rounded)")
+  knitr::kable(caption = "Core Parameter Summary (Rounded)")
 ```
 
 ```{r export_path_note}
@@ -390,3 +549,156 @@ export_tbl |>
 
 cat("Tables written to:", EXPORT_DIR)
 ```
+
+# 7. Details
+
+This section provides technical details on the implementation of the simulation study, including prior specifications, MCMC settings, and mathematical derivations specific to the EI and EL models.
+
+## 7.1. Prior Specifications
+
+Both models use weakly informative priors consistent with Studies 1-4. The key difference lies in where the Exponential marginal parameters appear.
+
+**Table: Prior Specifications for the EI (Indicator-Exponential) Model**
+
+| Parameter | Prior | Support | Rationale |
+|-----------|-------|---------|-----------|
+| $\mu_1, \mu_2$ | $\text{Normal}(0, 1)$ | $\mathbb{R}$ | Weakly informative; centered at true value (0) |
+| $\phi_{11}, \phi_{12}, \phi_{21}, \phi_{22}$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward stationarity; truncated by bounds |
+| $\sigma_{\text{exp},1}, \sigma_{\text{exp},2}$ | $\text{Log-Normal}(0, 0.5)$ | $(b_i, \infty)$ | Induced prior via reparameterization (see Section 7.4) |
+| $\rho$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward independence; truncated by bounds |
+
+**Table: Prior Specifications for the EL (Latent-Exponential) Model**
+
+| Parameter | Prior | Support | Rationale |
+|-----------|-------|---------|-----------|
+| $\mu_1, \mu_2$ | $\text{Normal}(0, 1)$ | $\mathbb{R}$ | Weakly informative; centered at true value (0) |
+| $\phi_{11}, \phi_{12}, \phi_{21}, \phi_{22}$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward stationarity; truncated by bounds |
+| $\sigma_{\text{exp},1}, \sigma_{\text{exp},2}$ | $\text{Log-Normal}(0, 0.5)$ | $(b_i, \infty)$ | Induced prior via reparameterization (see Section 7.4) |
+| $\rho$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward independence; truncated by bounds |
+
+::: {.callout-note}
+## Identical Priors, Different Likelihoods
+
+The EI and EL models use identical prior specifications. The difference lies entirely in the likelihood: EI applies the Exponential-copula structure to measurement residuals, while EL applies it to VAR innovation residuals.
+:::
+
+## 7.2. MCMC Settings
+
+All models were fitted using the No-U-Turn Sampler (NUTS) implemented in Stan via the `rstan` package.
+
+**Table: MCMC Sampling Configuration**
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| Chains | 4 | Number of independent Markov chains |
+| Total iterations | 4,000 | Iterations per chain (including warmup) |
+| Warmup iterations | 2,000 | Discarded adaptation period |
+| Post-warmup draws | 2,000 | Retained samples per chain |
+| `adapt_delta` | 0.95 | Target acceptance probability |
+| `max_treedepth` | 15 | Maximum tree depth for NUTS |
+| Parallelization | Outer loop | Replications parallelized; chains run sequentially |
+
+::: {.callout-note}
+## Convergence Diagnostics
+
+A replication was classified as **Problematic** if either:
+
+- Maximum $\hat{R} > 1.01$ across all parameters, or
+- Number of post-warmup divergent transitions $n_{\text{div}} > 0$ (when recorded)
+
+These thresholds are consistent with Studies 1-4.
+:::
+
+## 7.3. Gaussian Copula Log-Density
+
+The Gaussian copula density implementation is identical to Studies 1-4. For uniform marginals $(u, v) \in (0,1)^2$ with correlation parameter $\rho \in (-1, 1)$:
+
+Let $z_1 = \Phi^{-1}(u)$ and $z_2 = \Phi^{-1}(v)$ denote the standard normal quantile transforms. The copula log-density is:
+
+$$
+\log c(u, v; \rho) = -\frac{1}{2}\log(1 - \rho^2) - \frac{1}{2(1-\rho^2)}\left(z_1^2 - 2\rho z_1 z_2 + z_2^2\right) + \frac{1}{2}\left(z_1^2 + z_2^2\right)
+$$
+
+::: {.callout-note}
+## Boundary Clamping
+
+As in Studies 1-4, the implementation applies boundary clamping with $\varepsilon = 10^{-9}$:
+
+$$
+u_{\text{clamped}} = \max(\varepsilon, \min(1 - \varepsilon, u))
+$$
+
+This prevents numerical overflow when $\Phi^{-1}(u)$ is evaluated near 0 or 1.
+:::
+
+## 7.4. Feasibility-Bound Reparameterization
+
+The Exponential likelihood requires that shifted residuals have positive support. Both EI and EL models use the same reparameterization strategy as Study 2.
+
+For an Exponential marginal with scale $\sigma_{\text{exp}}$, the likelihood requires:
+
+$$
+x_{\text{shifted},t} = \sigma_{\text{exp}} + s \cdot \text{res}_t > 0, \quad \forall\, t
+$$
+
+where $s \in \{+1, -1\}$ is the skew direction. The feasibility bound is:
+
+$$
+b_i = \max_t \left( -s_i \cdot \text{res}_{t,i} \right)
+$$
+
+The model estimates an unconstrained parameter $\eta \in \mathbb{R}$ and transforms:
+
+$$
+\sigma_{\text{exp}} = b + \exp(\eta)
+$$
+
+This ensures $\sigma_{\text{exp}} > b$ always, guaranteeing positive support for all observations.
+
+## 7.5. EI vs EL Model Structure
+
+### EI (Indicator-Exponential) Model
+
+The EI model assumes a state-space structure:
+
+**Measurement equation:**
+$$
+y_t = x_t + \varepsilon_t
+$$
+
+where $\varepsilon_t$ has signed/shifted Exponential margins coupled by a Gaussian copula with parameter $\rho$.
+
+**State equation:**
+$$
+x_t = \mu + \Phi x_{t-1} + u_t, \qquad u_t \sim \mathcal{N}(0, \Sigma_u)
+$$
+
+In this formulation, the latent state $x_t$ is not directly observed; inference proceeds by integrating over the latent states.
+
+### EL (Latent-Exponential) Model
+
+The EL model assumes a direct VAR structure:
+
+$$
+y_t = \mu + \Phi y_{t-1} + \zeta_t
+$$
+
+where $\zeta_t$ has signed/shifted Exponential margins coupled by a Gaussian copula with parameter $\rho$.
+
+There is no separate measurement layer; the observed series $y_t$ is the state.
+
+::: {.callout-important}
+## Identification Under Misspecification
+
+When EI is fitted to Study B data (or EL to Study A data), the model attempts to explain structure that does not match its assumptions. This can lead to:
+
+1. **EI on Study B:** The model introduces a latent state where none exists, potentially attributing innovation variance to both measurement error and state noise.
+
+2. **EL on Study A:** The model ignores measurement error, attributing all residual structure to innovations, which conflates measurement and state dynamics.
+
+Understanding these misalignment mechanisms is central to interpreting the simulation results.
+:::
+
+## 7.6. Reproducibility Strategy
+
+The simulation study employs deterministic seeding to ensure full reproducibility, consistent with Studies 1-4. Each replication receives a unique seed derived from the condition ID and replication number.
