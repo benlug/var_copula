@@ -15,8 +15,7 @@ functions {
 data {
   int<lower=2> T;
   matrix[T, 2] y;
-  vector[2] skew_direction;      // +1 for right skew, -1 for left skew
-  real<lower=0> shape_gam;       // fixed Gamma shape parameter (k)
+  vector[2] skew_direction; // +1 for right skew, -1 for left skew
 }
 
 parameters {
@@ -27,9 +26,13 @@ parameters {
   real<lower=-1, upper=1> phi21;
   real<lower=-1, upper=1> phi22;
 
-  // Unconstrained parameter for reparameterized residual SD
-  // sigma_gam = b + exp(eta), where b is the data-dependent feasibility bound
+  // Unconstrained reparameterization for sigma_gam:
+  //   sigma_gam = b(shape_gam, data) + exp(eta)
+  // where b is a feasibility bound ensuring positive support.
   vector[2] eta;
+
+  // Shared Gamma shape parameter (estimated)
+  real<lower=0> shape_gam;
 
   real<lower=-1, upper=1> rho;
 }
@@ -43,6 +46,7 @@ transformed parameters {
 model {
   matrix[T-1, 2] predictions;
   matrix[T-1, 2] residuals;
+
   vector[2] b;           // feasibility bound for sigma_gam
   vector[2] sigma_gam;   // implied residual SD = b + exp(eta)
   vector[2] rate_gam;    // Gamma rate per margin
@@ -57,21 +61,19 @@ model {
   phi22 ~ normal(0, 0.5);
   rho   ~ normal(0, 0.5);
 
-  // IMPORTANT: As in model_EG_sl.stan, we do NOT place an additional prior on eta.
-  // We induce the intended prior on sigma_gam via change-of-variables below.
+  // Weakly informative prior on the Gamma shape.
+  // Centered near k=2 (least skew among default DGP levels) with heavy tails.
+  shape_gam ~ lognormal(log(2), 0.5);
 
-  // Compute residuals
+  // Compute VAR(1) residuals
   predictions = rep_matrix(mu, T-1) + y[1:T-1, ] * Phi_T;
   residuals   = y[2:T, ] - predictions;
 
   // Feasibility bound:
-  // For each margin i, define x_shifted = mean_x + s_i * res.
-  // We model x_shifted ~ Gamma(shape_gam, rate_gam), where
-  //   mean_x = sqrt(shape_gam) * sigma_gam,
-  //   var_x  = sigma_gam^2.
-  // To ensure x_shifted > 0 for all t we need:
+  // Model uses x_shifted = sqrt(shape_gam) * sigma_gam + s_i * res_{t,i}.
+  // To ensure x_shifted > 0 for all t:
   //   sqrt(shape_gam) * sigma_gam > max_t(-s_i * res_{t,i}).
-  // Hence the bound on sigma_gam is:
+  // Therefore:
   //   b_i = max_t(-s_i * res_{t,i}) / sqrt(shape_gam).
   for (i in 1:2) {
     real m = -skew_direction[i] * residuals[1, i];
@@ -86,10 +88,11 @@ model {
     sigma_gam[i] = b[i] + exp(eta[i]);
   }
 
-  // Gamma rate so that Var(x_shifted)=sigma_gam^2 and E[x_shifted]=sqrt(shape)*sigma_gam
+  // Rate so that Var(x_shifted)=sigma_gam^2 and E[x_shifted]=sqrt(shape)*sigma_gam
   rate_gam = sqrt_shape ./ sigma_gam;
 
   // Induced prior on sigma_gam via change-of-variables
+  // sigma_gam = b + exp(eta)  =>  |d sigma / d eta| = exp(eta)
   for (i in 1:2) {
     target += lognormal_lpdf(sigma_gam[i] | 0, 0.5) + eta[i];
   }
@@ -107,7 +110,7 @@ model {
       target += gamma_lpdf(x_shifted[i] | shape_gam, rate_gam[i]);
       u_vec[i] = gamma_cdf(x_shifted[i], shape_gam, rate_gam[i]);
 
-      // For left-skewed (mirrored) margins, flip the CDF
+      // Mirror the PIT for left-skewed (mirrored) margins
       if (skew_direction[i] < 0) u_vec[i] = 1.0 - u_vec[i];
     }
 

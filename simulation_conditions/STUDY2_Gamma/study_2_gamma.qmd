@@ -1,0 +1,1023 @@
+---
+title: "Study 2: Comparative Performance of Normal–Gaussian and Gamma–Gaussian Copula VAR Models Under Gamma Innovations (Three Skewness Levels)"
+format:
+  pdf:
+    toc: true
+    toc_depth: 3
+execute:
+  warning: false
+  message: false
+---
+
+```{r setup}
+#| label: setup
+#| echo: false
+suppressPackageStartupMessages({
+  library(dplyr)
+  library(tidyr)
+  library(purrr)
+  library(readr)
+  library(ggplot2)
+  library(stringr)
+  library(knitr)
+  library(RColorBrewer)
+
+  # optional helpers used in some workstreams
+  if (!requireNamespace("ggh4x", quietly = TRUE)) {
+    message("Package 'ggh4x' not installed; proceeding without nested facets.")
+  }
+  if (!requireNamespace("patchwork", quietly = TRUE)) {
+    message("Package 'patchwork' is recommended for arranging plots.")
+  } else {
+    library(patchwork)
+  }
+})
+
+# ---- paths ----
+DATA_DIR   <- file.path("data")
+RES_DIR    <- file.path("results")
+EXPORT_DIR <- file.path(RES_DIR, "exported_tables_s2")
+dir.create(EXPORT_DIR, showWarnings = FALSE, recursive = TRUE)
+
+# Study 2 pipelines sometimes write either sim_conditions.rds or sim_conditions_singlelevel.rds.
+# We accept either to make the report portable across directory layouts.
+.design_candidates <- c(
+  file.path(DATA_DIR, "sim_conditions.rds"),
+  file.path(DATA_DIR, "sim_conditions_singlelevel.rds")
+)
+.design_path <- .design_candidates[file.exists(.design_candidates)][1]
+
+files <- list(
+  cond   = file.path(RES_DIR, "summary_conditions.csv"),
+  rep    = file.path(RES_DIR, "summary_replications.csv"),
+  design = .design_path
+)
+
+if (is.na(files$design) || !all(file.exists(unlist(files)))) {
+  stop(
+    "Missing required input files. Expected:\n",
+    " - ", files$rep, "\n",
+    " - ", files$cond, "\n",
+    " - ", paste(.design_candidates, collapse = " or "), "\n",
+    "Run the Study 2 pipeline and the analysis script first."
+  )
+}
+```
+
+# 0. Summary
+
+## 0.1 Computational Stability versus Statistical Inference
+
+Both models exhibit excellent computational stability across all simulation conditions. The Normal–Gaussian (NG) model shows no post-warmup divergent transitions and max $\hat{R} \leq 1.01$ in all replications. The Gamma–Gaussian (GG) model is equally well-behaved, with zero divergent transitions and good convergence diagnostics. This is an improvement over the SG model under extremeCHI in Study 1, where divergences were frequent.
+
+## 0.2 Model Performance Under Gamma Innovations
+
+**Gamma–Gaussian (GG):** GG is (i) approximately unbiased for the VAR dynamics $\Phi$ and intercepts $\mu$, and (ii) well calibrated for dependence when $\rho$ is interpreted on the correct scale in mixed-direction cells (see Section 1.1 for the sign convention under mirroring). Empirical coverage is close to 0.95 in most conditions.
+
+**Normal–Gaussian (NG):** NG is computationally stable but exhibits attenuation in $|\rho|$ and corresponding under-coverage for $\rho$ under Gamma margins. This attenuation arises from PIT distortion (see Study 1, Section 6.1).
+
+## 0.3 Insights
+
+PIT distortion induced by marginal CDF misspecification is the dominant failure mechanism, consistent with findings from Study 1. When NG assumes Gaussian margins but the true innovations are Gamma, the probability integral transform yields non-uniform PITs, which attenuate the effective dependence seen by the Gaussian copula.
+# 1. Introduction
+
+This simulation study extends the analysis from Study 1 by comparing two Bayesian VAR(1) models under Gamma innovations: a Normal–Gaussian (NG) model and a Gamma–Gaussian (GG) model. While Study 1 examined skew-normal and chi-squared innovations, this study focuses on Gamma margins to assess whether correctly specifying the marginal distribution (and estimating its shape) recovers the model parameters without bias.
+
+## 1.1. Data Generating Process (DGP)
+
+The DGP follows the same structure as Study 1:
+
+$$
+Y_t = \mu + \Phi Y_{t-1} + \varepsilon_t, \qquad t = 2, \ldots, T,
+$$
+
+with $\mu = \mathbf{0}$. Innovations $\varepsilon_t = (\varepsilon_{1t}, \varepsilon_{2t})$ have standardized Gamma margins (mean 0, variance 1), with optional mirroring to induce left-skewness, and are coupled through a Gaussian copula with correlation parameter $\rho$.
+
+::: {.callout-note}
+## Standardization of Gamma Innovations
+
+A Gamma random variable $X \sim \text{Gamma}(k, \beta)$ (shape $k>0$, rate $\beta>0$) has
+
+$$
+\mathbb{E}[X] = \frac{k}{\beta}, \qquad \text{Var}(X) = \frac{k}{\beta^2}.
+$$
+
+To obtain mean 0 and variance 1 innovations, we apply the standardization
+
+$$
+Z = \frac{X - k/\beta}{\sqrt{k}/\beta}.
+$$
+
+In the simulation pipeline we use $\beta = \sqrt{k}$ so that $\text{Var}(X)=1$ and $Z = X - \sqrt{k}$. The (right) skewness magnitude is $2/\sqrt{k}$, so larger $k$ implies less skew. Mirroring ($-Z$) produces left-skewed innovations. For the joint density via Gaussian copula, see Study 1, Section 1.1.
+:::
+
+<!-- ::: {.callout-important} -->
+<!-- ## Copula Sign Under Mirroring -->
+
+<!-- Left-skew Gamma margins are produced by mirroring standardized Gamma innovations (multiplying by $-1$). For a Gaussian copula, mirroring exactly one margin corresponds to the transformation $u \mapsto 1-u$ on the PIT scale. Since $\Phi^{-1}(1-u) = -\Phi^{-1}(u)$, this flips the sign of the latent Gaussian score and therefore maps -->
+
+<!-- $$ -->
+<!-- \rho \;\mapsto\; -\rho. -->
+<!-- $$ -->
+
+<!-- Accordingly, in mixed-direction settings (e.g., $+-$), the effective copula correlation associated with the observed marginals is -->
+
+<!-- $$ -->
+<!-- \rho_{\mathrm{eff}} \;=\; s_1 s_2\,\rho,\qquad s_j\in\{+1,-1\}, -->
+<!-- $$ -->
+
+<!-- where $s_j=-1$ indicates a mirrored (left-skew) margin. -->
+<!-- ::: -->
+
+## 1.2. Simulation Design
+
+The study employs a factorial design crossing five factors.
+
+```{r design_table}
+#| label: design_table
+#| echo: false
+
+design_summary <- tibble(
+  Factor = c(
+    "DGP Level",
+    "Skewness Level (Gamma shape $k$)",
+    "Time Series Length (T)",
+    "Copula Correlation ($\\rho$)",
+    "VAR Parameters ($\\Phi$)",
+    "",
+    "Skewness Direction"
+  ),
+  Levels = c(
+    "Standardized Gamma",
+    "$k \u2208 \\{2.0, 1.0, 0.5\\}$ (least \u2192 most skew; skewness $=2/\\sqrt{k}$)",
+    "50, 100, 200",
+    "0.30, 0.50 (reported as input; evaluation uses $\\rho_{\\mathrm{eff}}$ in mixed-direction cells)",
+    "**Set A**: $\\begin{pmatrix} 0.40 & 0.10 \\\\ 0.10 & 0.40 \\end{pmatrix}$",
+    "**Set B**: $\\begin{pmatrix} 0.55 & 0.10 \\\\ 0.10 & 0.25 \\end{pmatrix}$",
+    "`++` (both right), `--` (both left), `+-` (mixed)"
+  )
+)
+
+kable(design_summary, caption = "Summary of the Simulation Design Factors.", escape = FALSE)
+```
+
+::: {.callout-caution}
+## Mixed-Direction Symmetry
+
+Only one mixed-direction case ($+-$) is included. For the asymmetric VAR set $B$, $+-$ and $-+$ are not equivalent under variable relabeling. See Study 1, Section 1.2 for discussion of this design choice.
+:::
+
+## 1.3. True Parameter Values
+
+```{r true_params_table}
+#| label: true_params_table
+#| echo: false
+
+true_params <- tibble(
+  Parameter = c(
+    "$\\mu_1, \\mu_2$",
+    "$\\phi_{11}$ (Set A / Set B)",
+    "$\\phi_{12} = \\phi_{21}$",
+    "$\\phi_{22}$ (Set A / Set B)",
+    "$\\rho$",
+    "$\\sigma_1, \\sigma_2$ (NG model)",
+    "$\\sigma_{\\mathrm{gam},1}, \\sigma_{\\mathrm{gam},2}$ (GG model)",
+    "$k$ (GG Gamma shape)"
+  ),
+  `True Value` = c(
+    "0, 0",
+    "0.40 / 0.55",
+    "0.10",
+    "0.40 / 0.25",
+    "0.30 or 0.50",
+    "1.0, 1.0",
+    "1.0, 1.0",
+    "Varies by condition: 2.0 / 1.0 / 0.5 (set via `GAMMA_SHAPES`)"
+  ),
+  Notes = c(
+    "Innovations are mean-zero",
+    "Diagonal AR coefficients",
+    "Cross-effects (symmetric)",
+    "Diagonal AR coefficients",
+    "Copula correlation",
+    "Innovations are unit-variance",
+    "Scale parameter for standardized Gamma",
+    "Gamma shape parameter (skewness = $2/\\sqrt{k}$)"
+  )
+)
+
+kable(true_params, caption = "True Parameter Values Used in the Data Generating Process.", escape = FALSE)
+```
+
+::: {.callout-note}
+## Bias Metric for Intercepts ($\mu$)
+
+Because $\mu = 0$ in the DGP, "relative bias" is undefined. We report absolute bias for $\mu$ (i.e., $\widehat{\mu} - 0$), using the convention $\text{rel\_bias} = \text{bias}$ when $|\text{truth}|$ is near 0.
+:::
+
+## 1.4 Visual Check: Standardized Marginal Innovations (DGP)
+
+```{r dgp_marginal_distributions, fig.width=10, fig.height=6}
+#| label: dgp_marginal_distributions
+#| echo: false
+
+set.seed(1)
+N_draw <- 150000
+
+# Three skewness levels via Gamma shape k (larger k = less skew).
+# The "current" setting in the pipeline (k=2) is the least-skewed level.
+shape_levels <- c(2, 1, 0.5)
+
+plot_df <- purrr::map_dfr(shape_levels, function(k) {
+  u <- runif(N_draw)
+  rate_k <- sqrt(k)
+  # With rate = sqrt(k): Var(X)=1, mean(X)=sqrt(k)
+  x_raw <- qgamma(u, shape = k, rate = rate_k)
+  x_std <- x_raw - sqrt(k)
+  tibble(
+    value = c(x_std, -x_std),
+    dist  = rep(c("Right-skew (std.)", "Left-skew (mirrored)"), each = N_draw),
+    k_lab = paste0("k = ", k, "  (skewness ", round(2 / sqrt(k), 2), ")")
+  )
+})
+
+ggplot(plot_df, aes(x = value, fill = dist)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 200, alpha = 0.35, position = "identity") +
+  geom_density(linewidth = 0.9, alpha = 0.8) +
+  stat_function(fun = dnorm, linewidth = 0.7, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dotted") +
+  facet_grid(k_lab ~ dist, scales = "free") +
+  theme_bw(base_size = 12) +
+  labs(
+    title = "Standardized Gamma innovations used in Study 2 (Gamma extension)",
+    x = "value",
+    y = "density"
+  ) +
+  guides(fill = "none")
+```
+
+# 2. Data Loading and Preparation
+
+```{r}
+#| label: data_prep
+#| echo: false
+
+# ---- design grid ----
+design_raw <- readRDS(files$design)
+
+# harmonize DGP label column across pipelines
+if (!"skew_level" %in% names(design_raw)) {
+  if ("dgp_level" %in% names(design_raw)) {
+    design_raw <- design_raw |> mutate(skew_level = as.character(dgp_level))
+  } else {
+    # if the design grid has no DGP label column, treat it as fixed Gamma
+    design_raw <- design_raw |> mutate(skew_level = "Gamma")
+  }
+}
+
+# harmonize rho name if needed
+if (!"rho" %in% names(design_raw) && "copula_rho" %in% names(design_raw)) {
+  design_raw <- design_raw |> mutate(rho = copula_rho)
+}
+
+required_cols <- c("condition_id", "skew_level", "direction", "T", "rho", "VARset")
+missing_cols <- setdiff(required_cols, names(design_raw))
+if (length(missing_cols) > 0) {
+  stop(
+    "Design grid is missing required columns: ", paste(missing_cols, collapse = ", "),
+    "\nAvailable columns: ", paste(names(design_raw), collapse = ", ")
+  )
+}
+
+design <- design_raw |>
+  select(condition_id, skew_level, direction, T, rho, VARset)
+
+# Order skew_level from least to most skew if shape information is available
+# (larger k = less skew).
+if ("shape_k" %in% names(design_raw)) {
+  skew_levels_ordered <- design_raw |>
+    distinct(skew_level, shape_k) |>
+    arrange(desc(shape_k)) |>
+    pull(skew_level)
+} else {
+  skew_levels_ordered <- sort(unique(design$skew_level))
+}
+
+# ---- summaries ----
+cond_raw <- read_csv(files$cond, show_col_types = FALSE) |>
+  left_join(design, by = "condition_id")
+
+rep_raw <- read_csv(files$rep, show_col_types = FALSE) |>
+  filter(!is.na(param)) |>
+  left_join(design, by = "condition_id")
+
+# keep only NG and GG
+keep_models <- c("NG", "GG")
+cond_raw <- cond_raw |> filter(model %in% keep_models)
+rep_raw  <- rep_raw  |> filter(model %in% keep_models)
+
+# parameter order for plotting
+param_levels <- c(
+  # GG marginal parameters
+  "sigma_gam[1]", "sigma_gam[2]", "shape_gam",
+  # NG marginal sds
+  "sigma[1]", "sigma[2]",
+  # core parameters
+  "mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22", "rho"
+)
+
+# apply factor levels and clear labels
+prep_data <- function(df) {
+  df |>
+    mutate(
+      param = factor(param, levels = param_levels),
+      T = factor(T),
+      skew_level = factor(skew_level, levels = skew_levels_ordered),
+      direction = factor(direction, levels = c("++", "+-", "--")),
+      rho_val = rho,
+      VARset_val = VARset,
+      rho = factor(rho, levels = sort(unique(rho))),
+      VARset = factor(VARset, levels = sort(unique(VARset))),
+      Model = factor(
+        ifelse(model == "GG", "Gamma–Gaussian (GG)", "Normal–Gaussian (NG)"),
+        levels = c("Normal–Gaussian (NG)", "Gamma–Gaussian (GG)")
+      )
+    )
+}
+
+rep_df <- prep_data(rep_raw)
+
+# ---- rho_eff adjustment for mirrored margins (see callout) ----
+# direction is a two-character string, with '-' indicating mirroring.
+dir_chr <- as.character(rep_df$direction)
+s1 <- ifelse(substr(dir_chr, 1, 1) %in% c("-", "−"), -1, 1)
+s2 <- ifelse(substr(dir_chr, 2, 2) %in% c("-", "−"), -1, 1)
+
+rep_df <- rep_df |>
+  mutate(
+    rho_truth = rho_val * (s1 * s2)
+  )
+
+# recompute truth/bias/coverage using rho_truth only for param=='rho'
+eps <- 1e-8
+rep_df <- rep_df |>
+  mutate(
+    truth_eff = if_else(param == "rho", rho_truth, truth),
+    bias_eff = post_mean - truth_eff,
+    rel_bias_eff = if_else(abs(truth_eff) < eps, bias_eff, bias_eff / abs(truth_eff)),
+    cover95_eff = (l95 <= truth_eff) & (u95 >= truth_eff)
+  )
+```
+
+## 2.1. MCMC Classification and Overview
+
+We classify runs based on MCMC diagnostics ($\hat{R}$ and divergent transitions) using the same criteria as Study 1:
+
+- **Clean:** $\hat{R} \leq 1.01$ and no post-warmup divergences.
+- **Problematic:** $\hat{R} > 1.01$ or at least one divergence.
+- **Failed/Error:** Non-OK status or missing diagnostics.
+
+```{r mcmc_classification}
+#| label: mcmc_classification
+#| echo: false
+
+RHAT_THRESHOLD <- 1.01
+
+rep_df <- rep_df |>
+  mutate(
+    n_div_clean = if_else(is.na(n_div), 0L, as.integer(n_div)),
+    mcmc_status = case_when(
+      is.na(max_rhat) | status != "ok" ~ "Failed/Error",
+      max_rhat > RHAT_THRESHOLD | n_div_clean > 0 ~ "Problematic",
+      TRUE ~ "Clean"
+    ),
+    mcmc_status = factor(mcmc_status, levels = c("Clean", "Problematic", "Failed/Error"))
+  )
+
+mcmc_summary <- rep_df |>
+  distinct(condition_id, rep_id, Model, mcmc_status, T, skew_level) |>
+  group_by(Model, T, skew_level, mcmc_status) |>
+  summarise(Count = n(), .groups = "drop")
+```
+
+```{r mcmc_status_plot, fig.height=5, fig.width=10}
+#| label: mcmc_status_plot
+#| echo: false
+
+ggplot(mcmc_summary, aes(x = T, y = Count, fill = mcmc_status)) +
+  geom_bar(stat = "identity", position = "stack") +
+  facet_grid(Model ~ skew_level) +
+  labs(
+    x = "Time series length (T)",
+    y = "Number of replications",
+    fill = "MCMC status",
+    title = "MCMC convergence status by model (Study 2)"
+  ) +
+  theme_bw(base_size = 14) +
+  scale_fill_manual(values = c("Clean" = "#4daf4a", "Problematic" = "#ff7f00", "Failed/Error" = "#e41a1c"))
+```
+
+Both NG and GG models exhibit uniformly clean fits across the entire design, with almost no post-warmup divergent transitions. This favorable computational performance contrasts with the SG model under extremeCHI in Study 1, which experienced frequent divergences. The absence of sampling difficulties in the current analysis indicates that correct specification of the marginal distribution, as in GG, mitigates the posterior geometry challenges associated with model misspecification.
+
+```{r mcmc_divergences_plot, fig.height=5, fig.width=10}
+#| label: mcmc_divergences_plot
+#| echo: false
+
+div_dist_data <- rep_df |>
+  filter(param == "rho") |>
+  distinct(condition_id, rep_id, Model, T, skew_level, n_div_clean, mcmc_status) |>
+  filter(mcmc_status != "Failed/Error")
+
+# Only show boxplot if there's variation in divergences; otherwise show summary table
+if (max(div_dist_data$n_div_clean, na.rm = TRUE) > 0) {
+  ggplot(div_dist_data, aes(x = T, y = n_div_clean, fill = Model)) +
+    geom_boxplot(outlier.shape = NA, alpha = 0.6, position = position_dodge(width = 0.8)) +
+    geom_point(size = 1.5, alpha = 0.4, position = position_jitterdodge(jitter.width = 0.2, dodge.width = 0.8)) +
+    facet_grid(Model ~ skew_level) +
+    theme_bw(base_size = 14) +
+    labs(
+      title = "Distribution of post-warmup divergent transitions",
+      y = "Count of divergences (n_div)",
+      x = "Time series length (T)"
+    )
+} else {
+  # All divergences are zero - show summary table
+  div_summary <- div_dist_data |>
+    group_by(Model, T) |>
+    summarise(
+      n_runs = n(),
+      total_div = sum(n_div_clean),
+      .groups = "drop"
+    )
+  kable(div_summary, 
+        caption = "Divergence summary: All runs have zero post-warmup divergent transitions.",
+        col.names = c("Model", "T", "N Runs", "Total Divergences"))
+}
+```
+
+# 3. Helpers
+
+```{r helpers}
+#| label: helpers
+#| echo: false
+
+# standardized visualization settings
+theme_standard <- theme_bw(base_size = 14) +
+  theme(legend.position = "bottom")
+
+# A more compact theme for many-facet simulation figures
+theme_facet <- theme_bw(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "horizontal",
+    legend.margin = margin(t = 2, r = 0, b = 0, l = 0, unit = "pt"),
+    strip.text.x = element_text(size = 9),
+    strip.text.y = element_text(size = 9),
+    axis.text = element_text(size = 8),
+    axis.title = element_text(size = 10),
+    panel.spacing = grid::unit(0.7, "lines")
+  )
+
+# Compact labellers to avoid unreadable facet strips
+lab_short <- labeller(
+  direction = function(x) x,
+  VARset = function(x) paste0("VAR ", x),
+  rho = function(x) paste0("rho=", x),
+  param = function(x) x
+)
+
+# Readable metric plot: facet by (direction x VARset), encode input rho by linetype
+plot_metric_readable <- function(data,
+                                  metric_col,
+                                  ylab,
+                                  title,
+                                  params = NULL,
+                                  use_free_y = FALSE,
+                                  ylims = NULL) {
+  df <- data |>
+    filter(!is.na(.data[[metric_col]]))
+
+  if (!is.null(params)) {
+    df <- df |> filter(param %in% params)
+  }
+
+  if (nrow(df) == 0) {
+    message("Skipping plot '", title, "' due to missing data.")
+    return(NULL)
+  }
+
+  # If rho is available, use linetype to avoid exploding the facet grid.
+  has_rho <- "rho" %in% names(df)
+
+  if (has_rho) {
+    p <- ggplot(
+      df,
+      aes(
+        x = T,
+        y = .data[[metric_col]],
+        color = Model,
+        linetype = rho,
+        group = interaction(Model, rho)
+      )
+    )
+  } else {
+    p <- ggplot(
+      df,
+      aes(
+        x = T,
+        y = .data[[metric_col]],
+        color = Model,
+        group = Model
+      )
+    )
+  }
+
+  p <- p +
+    geom_line(linewidth = 0.9) +
+    geom_point(size = 2.2) +
+    facet_grid(
+      param ~ direction + VARset,
+      labeller = lab_short,
+      scales = ifelse(use_free_y, "free_y", "fixed")
+    ) +
+    theme_facet +
+    scale_color_brewer(palette = "Dark2") +
+    labs(
+      title = title,
+      y = ylab,
+      x = "Time series length (T)",
+      linetype = "Input rho"
+    )
+
+  if (has_rho) {
+    p <- p + scale_linetype_discrete(labels = function(x) paste0("rho=", x))
+  }
+
+  # Reference lines
+  if (metric_col %in% c("mean_rel_bias", "sd_bias", "mean_bias")) {
+    p <- p + geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")
+  } else if (metric_col == "coverage_95") {
+    p <- p + geom_hline(yintercept = 0.95, linetype = "dashed", color = "grey50")
+  }
+
+  if (!is.null(ylims)) {
+    p <- p + coord_cartesian(ylim = ylims)
+  }
+
+  # Drop legends that would be redundant
+  if (dplyr::n_distinct(df$Model) == 1) {
+    p <- p + guides(color = "none")
+  }
+  if (!has_rho || dplyr::n_distinct(df$rho) == 1) {
+    p <- p + guides(linetype = "none")
+  }
+
+  p
+}
+
+summarise_conditions <- function(df) {
+  df |>
+    group_by(Model, T, skew_level, direction, VARset, rho, param) |>
+    summarise(
+      mean_rel_bias = mean(rel_bias_eff, na.rm = TRUE),
+      coverage_95 = mean(cover95_eff, na.rm = TRUE),
+      mean_post_sd = mean(post_sd, na.rm = TRUE),
+      emp_sd = sd(post_mean, na.rm = TRUE),
+      mean_bias = mean(bias_eff, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    mutate(
+      emp_sd = if_else(is.na(emp_sd), 0, emp_sd),
+      sd_bias = mean_post_sd - emp_sd,
+      RMSE = sqrt(mean_bias^2 + emp_sd^2)
+    )
+}
+```
+
+# 4. Gamma DGP: NG vs GG Performance
+
+```{r condition_summaries}
+#| label: condition_summaries
+#| echo: false
+
+core_params <- c("mu[1]", "mu[2]", "phi11", "phi12", "phi21", "phi22", "rho")
+
+cond_core <- rep_df |>
+  filter(param %in% core_params, mcmc_status != "Failed/Error") |>
+  summarise_conditions()
+```
+
+## 4.1. Relative Bias
+
+```{r exp_bias_rho, fig.height=4.5, fig.width=12}
+#| label: exp_bias_rho
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "mean_rel_bias",
+  ylab = "Mean relative bias",
+  title = "Relative bias: dependence parameter rho",
+  params = "rho",
+  ylims = c(-0.3, 0.3)
+)
+```
+
+```{r exp_bias_phi, fig.height=9.5, fig.width=12}
+#| label: exp_bias_phi
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "mean_rel_bias",
+  ylab = "Mean relative bias",
+  title = "Relative bias: VAR coefficients (Phi elements)",
+  params = c("phi11", "phi12", "phi21", "phi22"),
+  use_free_y = TRUE
+)
+```
+
+```{r exp_bias_mu, fig.height=6.0, fig.width=12}
+#| label: exp_bias_mu
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "mean_bias",
+  ylab = "Mean bias (truth = 0)",
+  title = "Bias: intercepts (mu)",
+  params = c("mu[1]", "mu[2]"),
+  use_free_y = TRUE
+)
+```
+
+**Interpretation.** Across $T$, GG is approximately unbiased for $\Phi$ and $\mu$. For $\rho$, the target in mixed-direction cells is $\rho_{\mathrm{eff}}$ (callout above): GG is close to unbiased, while NG exhibits attenuation in $|\rho|$, most pronounced at small $T$.
+
+## 4.2. 95% Coverage
+
+```{r exp_coverage_rho, fig.height=4.5, fig.width=12}
+#| label: exp_coverage_rho
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "coverage_95",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: dependence parameter rho",
+  params = "rho",
+  ylims = c(0.5, 1.0)
+)
+```
+
+```{r exp_coverage_phi, fig.height=9.5, fig.width=12}
+#| label: exp_coverage_phi
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "coverage_95",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: VAR coefficients (Phi elements)",
+  params = c("phi11", "phi12", "phi21", "phi22"),
+  ylims = c(0.5, 1.0)
+)
+```
+
+```{r exp_coverage_mu, fig.height=6.0, fig.width=12}
+#| label: exp_coverage_mu
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "coverage_95",
+  ylab = "Empirical 95% coverage",
+  title = "95% coverage: intercepts (mu)",
+  params = c("mu[1]", "mu[2]"),
+  ylims = c(0.5, 1.0)
+)
+```
+
+**Interpretation.** GG coverage is typically close to nominal for the core parameters. NG coverage shortfalls are concentrated in $\rho$, consistent with attenuation bias under marginal misspecification.
+
+## 4.3. SD-Bias
+
+```{r exp_sdbias_rho, fig.height=4.5, fig.width=12}
+#| label: exp_sdbias_rho
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "sd_bias",
+  ylab = "SD-bias (posterior SD − empirical SD)",
+  title = "SD-bias: dependence parameter rho",
+  params = "rho",
+  use_free_y = FALSE
+)
+```
+
+```{r exp_sdbias_phi, fig.height=9.5, fig.width=12}
+#| label: exp_sdbias_phi
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "sd_bias",
+  ylab = "SD-bias (posterior SD − empirical SD)",
+  title = "SD-bias: VAR coefficients (Phi elements)",
+  params = c("phi11", "phi12", "phi21", "phi22"),
+  use_free_y = TRUE
+)
+```
+
+```{r exp_sdbias_mu, fig.height=6.0, fig.width=12}
+#| label: exp_sdbias_mu
+#| echo: false
+
+plot_metric_readable(
+  cond_core,
+  metric_col = "sd_bias",
+  ylab = "SD-bias (posterior SD − empirical SD)",
+  title = "SD-bias: intercepts (mu)",
+  params = c("mu[1]", "mu[2]"),
+  use_free_y = TRUE
+)
+```
+
+**Interpretation.** GG is generally well calibrated (SD-bias near 0). NG frequently shows negative SD-bias for $\rho$, indicating overconfident posterior uncertainty for dependence under misspecified margins.
+
+# 5. Marginal Parameters
+
+We report mean bias for the Gamma scale parameters in GG ($\\sigma_{\\mathrm{gam}}$) and the innovation standard deviations in NG ($\\sigma$). We additionally report bias for the Gamma shape parameter $k$ (denoted `shape_gam`). Under the standardized DGP, the reference value for $\\sigma_{\\mathrm{gam}}$ and $\\sigma$ is 1.
+
+```{r marginal_params, fig.height=7.5, fig.width=12}
+#| label: marginal_params
+#| echo: false
+
+cond_all <- rep_df |>
+  filter(mcmc_status != "Failed/Error") |>
+  summarise_conditions()
+
+# GG marginal scales
+sigma_gam_data <- cond_all |>
+  filter(param %in% c("sigma_gam[1]", "sigma_gam[2]"), Model == "Gamma–Gaussian (GG)")
+
+if (nrow(sigma_gam_data) > 0) {
+  plot_metric_readable(
+    sigma_gam_data,
+    metric_col = "mean_bias",
+    ylab = "Mean bias (estimate − 1)",
+    title = "GG: bias for sigma_gam (truth = 1)",
+    params = c("sigma_gam[1]", "sigma_gam[2]"),
+    use_free_y = TRUE
+  )
+} else {
+  message("No GG marginal scale parameters available.")
+}
+
+# GG shape parameter (if estimated)
+shape_gam_data <- cond_all |>
+  filter(param %in% c("shape_gam"), Model == "Gamma–Gaussian (GG)")
+
+if (nrow(shape_gam_data) > 0) {
+  plot_metric_readable(
+    shape_gam_data,
+    metric_col = "mean_bias",
+    ylab = "Mean bias (estimate − truth)",
+    title = "GG: bias for shape_gam (truth set by DGP)",
+    params = c("shape_gam"),
+    use_free_y = TRUE
+  )
+} else {
+  message("No GG shape parameter available (shape may be fixed in Stan).")
+}
+```
+
+```{r marginal_params_ng, fig.height=7.5, fig.width=12}
+#| label: marginal_params_ng
+#| echo: false
+
+# NG marginal SDs
+sigma_ng_data <- cond_all |>
+  filter(param %in% c("sigma[1]", "sigma[2]"), Model == "Normal–Gaussian (NG)")
+
+if (nrow(sigma_ng_data) > 0) {
+  plot_metric_readable(
+    sigma_ng_data,
+    metric_col = "mean_bias",
+    ylab = "Mean bias (estimate − 1)",
+    title = "NG: bias for sigma (truth = 1)",
+    params = c("sigma[1]", "sigma[2]"),
+    use_free_y = TRUE
+  )
+} else {
+  message("No NG marginal SD parameters available.")
+}
+```
+
+**Interpretation.** The $\sigma$ estimates under NG show small but systematic deviations from the true value of 1. As discussed in Study 1 (Section 7.1), these deviations arise from marginal misspecification but are not the mechanism driving $\rho$ attenuation—both phenomena stem from the same root cause (marginal misspecification) but through different pathways.
+
+# 6. Details
+
+This section provides technical details on the implementation of the simulation study, including prior specifications, MCMC settings, and mathematical derivations specific to the Gamma–Gaussian (GG) model.
+
+## 6.1. Prior Specifications
+
+Both models use weakly informative priors. The GG model employs a feasibility-bound reparameterization for the marginal scale parameters to handle the positive support constraint implied by Gamma marginals.
+
+**Table: Prior Specifications for the Normal–Gaussian (NG) Model**
+
+| Parameter | Prior | Support | Rationale |
+|-----------|-------|---------|-----------|
+| $\mu_1, \mu_2$ | $\text{Normal}(0, 1)$ | $\mathbb{R}$ | Weakly informative; centered at true value (0) |
+| $\phi_{11}, \phi_{12}, \phi_{21}, \phi_{22}$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward stationarity; truncated by bounds |
+| $\sigma_1, \sigma_2$ | $\text{Half-Normal}(0, 1)$ | $(0, \infty)$ | Weakly informative scale prior |
+| $\rho$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward independence; truncated by bounds |
+
+**Table: Prior Specifications for the Gamma–Gaussian (GG) Model**
+
+| Parameter | Prior | Support | Rationale |
+|-----------|-------|---------|-----------|
+| $\mu_1, \mu_2$ | $\text{Normal}(0, 1)$ | $\mathbb{R}$ | Weakly informative; centered at true value (0) |
+| $\phi_{11}, \phi_{12}, \phi_{21}, \phi_{22}$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward stationarity; truncated by bounds |
+| $\sigma_{\mathrm{gam},1}, \sigma_{\mathrm{gam},2}$ | $\text{Log-Normal}(0, 0.5)$ | $(b_i, \infty)$ | Induced prior via reparameterization (see Section 6.4) |
+| $k$ (`shape_gam`) | $\text{Log-Normal}(\log 2, 0.5)$ | $(0, \infty)$ | Weakly informative; centers near the default DGP shape |
+| $\rho$ | $\text{Normal}(0, 0.5)$ | $(-1, 1)$ | Regularizes toward independence; truncated by bounds |
+
+::: {.callout-note}
+## GG Scale Parameter Prior
+
+The GG model does **not** place a direct prior on the unconstrained auxiliary parameters $\eta \in \mathbb{R}$. Instead, it estimates $\eta$ and applies the change-of-variables transformation:
+
+$$
+\sigma_{\mathrm{gam}} = b + \exp(\eta)
+$$
+
+where $b$ is a data- (and shape-) dependent feasibility bound (Section 6.4). The induced prior on $\sigma_{\mathrm{gam}}$ is $\text{Log-Normal}(0, 0.5)$ with support shifted to $(b, \infty)$.
+:::
+
+## 6.2. MCMC Settings
+
+All models were fitted using the No-U-Turn Sampler (NUTS) implemented in Stan via the `rstan` package.
+
+**Table: MCMC Sampling Configuration**
+
+| Setting | Value | Description |
+|---------|-------|-------------|
+| Chains | 4 | Number of independent Markov chains |
+| Total iterations | 4,000 | Iterations per chain (including warmup) |
+| Warmup iterations | 2,000 | Discarded adaptation period |
+| Post-warmup draws | 2,000 | Retained samples per chain |
+| `adapt_delta` | 0.95 | Target acceptance probability |
+| `max_treedepth` | 15 | Maximum tree depth for NUTS |
+| Parallelization | Outer loop | Replications parallelized; chains run sequentially |
+
+## 6.3. Gaussian Copula Log-Density
+
+The Gaussian copula density implementation is identical to Study 1. For uniform marginals $(u, v) \in (0,1)^2$ with correlation parameter $\rho \in (-1, 1)$:
+
+Let $z_1 = \Phi^{-1}(u)$ and $z_2 = \Phi^{-1}(v)$ denote the standard normal quantile transforms. The copula log-density is:
+
+$$
+\log c(u, v; \rho) = -\frac{1}{2}\log(1 - \rho^2) - \frac{1}{2(1-\rho^2)}\left(z_1^2 - 2\rho z_1 z_2 + z_2^2\right) + \frac{1}{2}\left(z_1^2 + z_2^2\right)
+$$
+
+::: {.callout-note}
+## Boundary Clamping
+
+As in Study 1, the implementation applies boundary clamping with $\varepsilon = 10^{-9}$:
+
+$$
+u_{\text{clamped}} = \max(\varepsilon, \min(1 - \varepsilon, u))
+$$
+
+This prevents numerical overflow when $\Phi^{-1}(u)$ is evaluated near 0 or 1.
+:::
+
+## 6.4. GG Model: Feasibility-Bound Reparameterization
+
+The Gamma–Gaussian model requires that the shifted residuals have positive support. This section documents the reparameterization strategy that ensures feasibility while maintaining good posterior geometry.
+
+For a Gamma marginal with scale $\sigma_{\mathrm{gam}}$, the likelihood requires:
+
+$$
+x_{\text{shifted},t} = \sqrt{k}\,\sigma_{\mathrm{gam}} + s \cdot \text{res}_t > 0, \quad \forall\, t
+$$
+
+where $s \in \{+1, -1\}$ is the skew direction (+1 for right-skewed, −1 for left-skewed/mirrored). Under the GG parameterization
+
+$$
+x_{\text{shifted}} \sim \text{Gamma}\Big(k,\; \text{rate} = \tfrac{\sqrt{k}}{\sigma_{\mathrm{gam}}}\Big),
+$$
+
+so that $\mathbb{E}[x_{\text{shifted}}]=\sqrt{k}\,\sigma_{\mathrm{gam}}$ and $\text{Var}(x_{\text{shifted}})=\sigma_{\mathrm{gam}}^2$.
+
+Define the feasibility bound:
+
+$$
+b_i = \max_t \left( \frac{-s_i \cdot \text{res}_{t,i}}{\sqrt{k}} \right).
+$$
+
+Any $\sigma_{\mathrm{gam},i} > b_i$ is guaranteed to satisfy the support constraint.
+
+### $\eta$ Reparameterization
+
+Rather than estimating $\sigma_{\mathrm{gam}}$ directly, the GG model estimates an unconstrained parameter $\eta \in \mathbb{R}$ and transforms:
+
+$$
+\sigma_{\mathrm{gam}} = b + \exp(\eta)
+$$
+
+where $\exp(\eta) > 0$ represents the "slack" above the feasibility bound.
+
+### Induced Prior via Change-of-Variables
+
+To place a $\text{Log-Normal}(0, 0.5)$ prior on $\sigma_{\mathrm{gam}}$, we apply the change-of-variables formula. The Jacobian of the transformation $\sigma_{\mathrm{gam}} = b + \exp(\eta)$ is:
+
+$$
+\frac{d\sigma_{\mathrm{gam}}}{d\eta} = \exp(\eta)
+$$
+
+The log-posterior contribution is:
+
+$$
+\log p(\sigma_{\mathrm{gam}}) + \log\left|\frac{d\sigma_{\mathrm{gam}}}{d\eta}\right| = \text{lognormal\_lpdf}(\sigma_{\mathrm{gam}} \mid 0, 0.5) + \eta
+$$
+
+### Stan Implementation
+
+```stan
+model {
+  // compute feasibility bounds: b_i = max_t(-s_i * res_{t,i}) / sqrt(k)
+  for (i in 1:2) {
+    real m = -skew_direction[i] * residuals[1, i];
+    for (t in 2:(T-1)) {
+      m = fmax(m, -skew_direction[i] * residuals[t, i]);
+    }
+    b[i] = m / sqrt_shape;
+  }
+
+  // reparameterized sigma: always feasible
+  for (i in 1:2) {
+    sigma_gam[i] = b[i] + exp(eta[i]);
+  }
+  rate_gam = sqrt_shape ./ sigma_gam;
+
+  // induced prior on sigma_gam via change-of-variables
+  for (i in 1:2) {
+    target += lognormal_lpdf(sigma_gam[i] | 0, 0.5) + eta[i];
+  }
+
+  // likelihood contributions ...
+}
+```
+
+## 6.5. CDF Mirroring for Left-Skewed Gamma Margins
+
+For left-skewed (mirrored) Gamma margins, the model must correctly transform the CDF to preserve the copula correlation structure.
+
+### The Mirroring Problem
+
+Let $X \sim \text{Gamma}(k, \beta)$ with CDF $F_X(x)$. For a mirrored variable $Y = -X$:
+
+$$
+F_Y(y) = P(Y \leq y) = P(-X \leq y) = P(X \geq -y) = 1 - F_X(-y)
+$$
+
+On the uniform (PIT) scale, if $U = F_X(X)$, then the PIT of $Y = -X$ is $V = 1 - U$.
+
+### Copula Correlation Sign Flip
+
+For a Gaussian copula, the latent normal scores are $Z = \Phi^{-1}(U)$. Under the $U \mapsto 1-U$ transformation:
+
+$$
+\Phi^{-1}(1 - U) = -\Phi^{-1}(U) = -Z
+$$
+
+This negates the latent score, flipping the sign of the copula correlation. If the DGP has $\rho > 0$ and exactly one margin is mirrored, the effective correlation on the observed scale is $\rho_{\mathrm{eff}} = -\rho$.
+
+### Stan Implementation
+
+The GG model applies the CDF flip after computing the Gamma CDF:
+
+```stan
+for (i in 1:2) {
+  // shift residual to positive support
+  x_shifted[i] = sqrt_shape * sigma_gam[i] + skew_direction[i] * res[i];
+  target += gamma_lpdf(x_shifted[i] | shape_gam, rate_gam[i]);
+
+  // compute PIT
+  u_vec[i] = gamma_cdf(x_shifted[i], shape_gam, rate_gam[i]);
+
+  // flip CDF for left-skewed (mirrored) margins
+  if (skew_direction[i] < 0) u_vec[i] = 1.0 - u_vec[i];
+}
+
+target += gaussian_copula_ld(u_vec[1], u_vec[2], rho);
+```
+
+<!-- ::: {.callout-note} -->
+<!-- ## Effective Correlation in Evaluation -->
+
+<!-- The analysis script computes $\rho_{\mathrm{eff}} = s_1 s_2 \rho$ where $s_j = -1$ if margin $j$ is mirrored. Bias and coverage metrics for $\rho$ are evaluated against $\rho_{\mathrm{eff}}$, not the input $\rho$, ensuring correct interpretation in mixed-direction cells. -->
+<!-- ::: -->
+

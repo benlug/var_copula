@@ -112,8 +112,6 @@ if (nrow(rep) == 0) {
 param_levels <- c(
   # Study 2 (EG)
   "sigma_exp[1]", "sigma_exp[2]",
-  # Study 3 (GG)
-  "sigma_gam[1]", "sigma_gam[2]",
   # Study 1 (SG)
   "omega[1]", "omega[2]", "alpha[1]", "alpha[2]",
   # Study 1 (NG)

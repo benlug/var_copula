@@ -1,14 +1,23 @@
 #!/usr/bin/env Rscript
 ###########################################################################
-# run_pipeline_gamma.R  – Gamma Innovations (Study 3)
+# run_pipeline_gamma.R  – Study 2 (Gamma extension)
 #
-# Same factorial design as Study 2, except the DGP innovations use
-# standardized Gamma margins instead of standardized Exponential margins.
+# Goal
+#   Replicate Study 2's factorial design, replacing Exponential innovations
+#   with standardized Gamma innovations.
 #
-# Notes
-#   * We use Gamma(shape = k, rate = sqrt(k)) so that Var(X)=1.
-#     Then Z = X - E[X] = X - sqrt(k) has mean 0 and variance 1.
-#   * Mirroring ("-") multiplies Z by -1 to create left-skewness.
+# Update (Skewness levels)
+#   This pipeline supports THREE Gamma-shape levels to vary skewness magnitude.
+#   Skewness for Gamma(k, ·) is 2/sqrt(k); larger k = less skew.
+#   The default set keeps the original k=2 as the LEAST-skewed level.
+#
+# Standardization
+#   X ~ Gamma(shape=k, rate=beta)
+#   Z = (X - k/beta) / (sqrt(k)/beta)
+#
+# Implementation note
+#   We use beta = sqrt(k) by default for each k (so Var(X)=1), and then
+#   Z = X - sqrt(k). Mirroring ("-") multiplies Z by -1 to induce left skew.
 ###########################################################################
 
 suppressPackageStartupMessages({
@@ -35,47 +44,56 @@ tryCatch(
   }
 )
 
-# Define specific directories
-DATA_DIR <- file.path(BASE_DIR, "data")
+DATA_DIR   <- file.path(BASE_DIR, "data")
 CHECKS_DIR <- file.path(BASE_DIR, "checks")
-FITS_DIR <- file.path(BASE_DIR, "fits")
+FITS_DIR   <- file.path(BASE_DIR, "fits")
 RESULT_DIR <- file.path(BASE_DIR, "results")
-STAN_DIR <- file.path(BASE_DIR, "stan")
+STAN_DIR   <- file.path(BASE_DIR, "stan")
 
-# Create directories
-dir.create(DATA_DIR, FALSE, TRUE)
+dir.create(DATA_DIR,   FALSE, TRUE)
 dir.create(CHECKS_DIR, FALSE, TRUE)
-dir.create(FITS_DIR, FALSE, TRUE)
+dir.create(FITS_DIR,   FALSE, TRUE)
 dir.create(RESULT_DIR, FALSE, TRUE)
 
 ## -- resume flags --------------------------------------------------------
 START_COND <- as.integer(Sys.getenv("START_COND", "1"))
-START_REP <- as.integer(Sys.getenv("START_REP", "1"))
+START_REP  <- as.integer(Sys.getenv("START_REP", "1"))
 message(
   ">>> Pipeline Start (Gamma DGP). Resume settings: Condition=", START_COND,
   ", Replication=", START_REP
 )
 
 ## -- toggles & constants -------------------------------------------------
-RUN_SIM <- TRUE
-RUN_CHECKS <- TRUE
-RUN_FITTING <- TRUE
-RUN_ANALYSIS <- TRUE
+RUN_SIM           <- TRUE
+RUN_CHECKS        <- TRUE
+RUN_FITTING       <- TRUE
+RUN_ANALYSIS      <- TRUE
 RUN_VISUALIZATION <- FALSE
 
-REPS_PER_CELL <- 200
+REPS_PER_CELL <- as.integer(Sys.getenv("REPS_PER_CELL", "200"))
 NUM_CORES_OUT <- max(1, parallel::detectCores() - 1)
 
-# Fixed Gamma shape (k). Keep it constant to preserve the Study 2 factorial design.
-GAMMA_SHAPE <- suppressWarnings(as.numeric(Sys.getenv("GAMMA_SHAPE", "2")))
-if (!is.finite(GAMMA_SHAPE) || GAMMA_SHAPE <= 0) {
-  stop("GAMMA_SHAPE must be a positive number")
-}
-GAMMA_RATE <- sqrt(GAMMA_SHAPE)
-
-# Global seed is only used for non-simulation randomness.
+# Global seed is used only for incidental randomness (not the per-cell simulation).
 SEED_BASE_SIM <- 2026L
 set.seed(SEED_BASE_SIM)
+
+## -- Gamma shape levels (skewness magnitude) ----------------------------
+# Comma-separated list, e.g. "2,1,0.5".
+# Default keeps k=2 (your current setting) as the least skewed level.
+GAMMA_SHAPES_RAW <- Sys.getenv("GAMMA_SHAPES", "2,1,0.5")
+GAMMA_SHAPES <- suppressWarnings(as.numeric(strsplit(GAMMA_SHAPES_RAW, ",")[[1]]))
+GAMMA_SHAPES <- GAMMA_SHAPES[is.finite(GAMMA_SHAPES) & GAMMA_SHAPES > 0]
+GAMMA_SHAPES <- unique(GAMMA_SHAPES)
+
+if (length(GAMMA_SHAPES) < 1) {
+  stop("GAMMA_SHAPES must contain at least one positive number (e.g., '2,1,0.5').")
+}
+
+# Sort so that the FIRST level is the least-skewed (largest shape).
+# This also preserves condition_id ordering in a sensible way.
+GAMMA_SHAPES <- sort(GAMMA_SHAPES, decreasing = TRUE)
+
+message(">>> Gamma shape levels (least → most skew): ", paste(GAMMA_SHAPES, collapse = ", "))
 
 ## =======================================================================
 ## 1 · Design grid --------------------------------------------------------
@@ -95,22 +113,37 @@ assign_distribution_gamma <- function(dir_flag, shape, rate) {
   )
 }
 
-design_grid <- expand.grid(
-  dgp_level = c("Gamma"),
+# Base Study-2 factorial grid (without the Gamma-shape level).
+base_grid <- expand.grid(
   direction = c("++", "--", "+-"),
-  T = c(50, 100, 200),
-  rho = c(0.30, 0.50),
-  VARset = names(var_sets),
+  T         = c(50, 100, 200),
+  rho       = c(0.30, 0.50),
+  VARset    = names(var_sets),
   stringsAsFactors = FALSE
-) |>
+)
+
+# Add THREE skewness-magnitude levels via shape k.
+# NOTE: Ordering is by descending k so the first block corresponds to the
+# least-skewed level (by default: k=2), which keeps it aligned with the
+# original single-k version.
+
+design_grid <- purrr::map_dfr(GAMMA_SHAPES, function(k) {
+  base_grid |>
+    mutate(
+      shape_k  = k,
+      rate_k   = sqrt(k),
+      # Use skew_level as the DGP label (Study 1/2 scripts standardize on this name)
+      skew_level = paste0("Gamma(k=", k, ")")
+    )
+}) |>
   mutate(
     condition_id = row_number(),
     n_reps = REPS_PER_CELL
   ) |>
   rowwise() |>
   mutate(
-    margin_info = list(assign_distribution_gamma(direction, GAMMA_SHAPE, GAMMA_RATE)),
-    phi_matrix = list(var_sets[[VARset]])
+    margin_info = list(assign_distribution_gamma(direction, shape_k, rate_k)),
+    phi_matrix  = list(var_sets[[VARset]])
   ) |>
   ungroup()
 
@@ -126,10 +159,10 @@ if (RUN_SIM) {
 
   simulate_all_conditions_var1(
     sim_conditions_df = design_grid,
-    output_dir = DATA_DIR,
-    start_condition = START_COND,
-    start_rep = START_REP,
-    seed_base = SEED_BASE_SIM
+    output_dir        = DATA_DIR,
+    start_condition   = START_COND,
+    start_rep         = START_REP,
+    seed_base         = SEED_BASE_SIM
   )
 }
 
